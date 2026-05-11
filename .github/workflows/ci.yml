@@ -24,7 +24,5 @@ jobs:
       - name: Run tests
         run: cargo test --workspace
 
-
-
       - name: Run CLI smoke check
         run: cargo run -p cairn-cli -- --help
