@@ -8,6 +8,8 @@ This is a practical MVP threat model for Cairn. It is not a claim that the vault
 - Derived keys.
 - Root vault key.
 - Wrapped key slots.
+- Root-key wrap nonce.
+- Payload nonce.
 - Vault payload.
 - Recovery kit.
 - Encrypted export.
@@ -58,10 +60,15 @@ This is a practical MVP threat model for Cairn. It is not a claim that the vault
 ## Security Invariants
 
 - Secrets are never logged.
-- The cleartext header is authenticated as AEAD associated data.
+- The full cleartext header is authenticated as payload AEAD associated data.
+- Root-key wrapping metadata is authenticated as wrapping AEAD associated data.
 - Wrong passwords and tampering fail closed.
 - KDF parameters are explicit and policy-checked.
 - The root vault key is random, not derived directly from the password.
+- The passphrase-derived key-encryption key wraps the root vault key; the root
+  vault key encrypts opaque payload bytes.
+- The KDF salt, root-key wrap nonce, and payload nonce are separate values and
+  must not be reused for each other.
 - Crypto suite IDs are explicit.
 - Plaintext item metadata is not stored outside the encrypted payload in v1 unless an ADR approves it.
 - CLI and UI code must not own cryptographic logic.
@@ -73,4 +80,3 @@ This is a practical MVP threat model for Cairn. It is not a claim that the vault
 Negative tests are required for wrong password, tampered header, tampered ciphertext, truncation, corrupt nonce, corrupt wrapped key, old schema version, malformed import, and secret leakage once those features exist.
 
 Format tests must prove that unsupported versions fail safely until migration is implemented. Import tests must treat malformed input as hostile. CLI and future UI tests must verify that secrets are not printed, logged, persisted in crash reports, or exposed through debug output.
-

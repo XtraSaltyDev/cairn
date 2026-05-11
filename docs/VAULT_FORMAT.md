@@ -12,8 +12,9 @@ CVF-1 means Cairn Vault Format version 1.
 - Payload: encrypted vault snapshot
 
 The current implementation covers deterministic CVF-1 envelope encoding, strict
-header parsing, and malformed-input rejection. Full encryption, unlock, item
-storage, recovery, and write-path behavior remain future work.
+header parsing, opaque payload encryption/decryption, and malformed-input
+rejection. Item storage, unlock sessions, recovery, import/export, CLI vault
+commands, and write-path behavior remain future work.
 
 ## Binary Layout
 
@@ -33,7 +34,7 @@ The payload ciphertext is opaque to the parser in this milestone, but it must be
 present and non-empty. There is no plaintext item database or item metadata
 outside the encrypted payload.
 
-The CVF-1 header body currently has a fixed length of 120 bytes:
+The CVF-1 header body currently has a fixed length of 146 bytes:
 
 ```text
 offset  size  field
@@ -47,11 +48,17 @@ offset  size  field
 22      4     Argon2id output length: 32
 26      2     KDF salt length: 16
 28      16    KDF salt bytes
-44      2     wrapped root key length: 48
-46      48    wrapped root key placeholder bytes
-94      2     payload nonce length: 24
-96      24    payload nonce bytes
+44      2     root-key wrap nonce length: 24
+46      24    root-key wrap nonce bytes
+70      2     wrapped root key length: 48
+72      48    wrapped root key bytes
+120     2     payload nonce length: 24
+122     24    payload nonce bytes
 ```
+
+CVF-1 is still a pre-release draft. Schema version 1 is retained while no stable
+`.cairn` files exist, and this layout may still change before a production
+format is declared.
 
 ## Header Fields
 
@@ -63,7 +70,8 @@ The cleartext header should contain only the minimum non-sensitive data needed t
 - KDF suite ID.
 - Argon2id parameters.
 - Salt.
-- Wrapped root key slot metadata.
+- Root-key wrap nonce.
+- Wrapped root key bytes.
 - Payload nonce.
 - Optional non-sensitive flags.
 
@@ -71,23 +79,39 @@ No plaintext item metadata should exist outside the encrypted payload in v1 unle
 
 Unknown schema versions, crypto suite IDs, KDF suite IDs, non-zero flags,
 unexpected fixed lengths, inconsistent header lengths, truncated inputs, and an
-empty payload fail closed. The current parser also policy-checks the explicit
-Argon2id parameters against the CVF-1 constants above instead of accepting
-library defaults.
+empty payload fail closed. The decrypt path policy-checks the explicit Argon2id
+parameters before deriving keys instead of accepting library defaults. Current
+parameters are pre-release and require final tuning/calibration before
+production use.
 
 ## Payload
 
-The payload is the encrypted vault snapshot. It must be authenticated with AEAD, and the header must be authenticated as associated data so header tampering fails closed.
+The payload is encrypted opaque bytes. The implementation does not define item
+records or plaintext metadata yet. Payload ciphertext is produced with
+XChaCha20-Poly1305 using the random vault root key and the payload nonce. The
+canonical encoded prefix plus header body bytes are authenticated as AEAD
+associated data so header tampering fails closed.
 
 ## Crypto Direction
 
 - Use Argon2id for password-based key derivation.
 - Use XChaCha20-Poly1305-style authenticated encryption.
 - Generate a random root vault key.
-- Use the master-passphrase-derived key to wrap the root vault key.
+- Use the master-passphrase-derived key-encryption key to wrap the root vault
+  key.
+- Use a distinct root-key wrap nonce for the key wrapping operation.
+- Use a distinct payload nonce for payload encryption.
+- Do not reuse the KDF salt as a nonce.
+- Use the random root vault key to encrypt the opaque payload.
+- Authenticate root-key wrapping metadata as AAD: magic bytes, format version,
+  schema version, crypto suite ID, KDF suite ID, flags, Argon2id parameters,
+  KDF salt length and bytes, and root-key wrap nonce length and bytes.
+- Authenticate payload metadata as AAD: canonical encoded prefix and full header
+  body bytes.
 - Persist explicit algorithm IDs and parameters.
 - Do not rely on changing library defaults.
 - Do not implement custom cryptography.
+- Do not claim this draft is audited or production-ready.
 
 ## Write Strategy
 
@@ -110,6 +134,7 @@ The parser and decrypt path must reject:
 - Modified header.
 - Modified ciphertext.
 - Changed KDF parameters.
-- Swapped nonce.
+- Swapped or modified root-key wrap nonce.
+- Swapped or modified payload nonce.
 - Corrupt wrapped key.
 - Unsupported schema.

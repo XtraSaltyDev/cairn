@@ -17,7 +17,7 @@ Implemented CVF-1 parser tests currently cover:
 - Unsupported schema version.
 - Unsupported crypto suite ID.
 - Unsupported KDF suite ID.
-- Invalid salt, wrapped root key, and payload nonce lengths.
+- Invalid salt, root-key wrap nonce, wrapped root key, and payload nonce lengths.
 - Header length values that are too large or inconsistent with the parsed body.
 - Rejection of empty payload ciphertext.
 - Debug output that reports lengths instead of wrapped-key or payload bytes.
@@ -28,9 +28,14 @@ Tamper tests must cover modified header fields, modified ciphertext, changed KDF
 
 The current tamper-test foundation mutates every byte in a valid in-memory
 header body and asserts that parsing either fails validation or produces a
-different parsed header. AEAD ciphertext, swapped nonce, wrong password, and
-header-as-AAD authentication tests remain future work because full encryption and
-unlock are not implemented yet.
+different parsed header. Cryptographic envelope tests now cover wrong
+passphrase, modified payload ciphertext, modified payload tag, modified payload
+nonce, modified header AAD, modified KDF salt, modified Argon2id parameters,
+modified root-key wrap nonce, modified wrapped root key, unsupported suites, and
+weak KDF parameters under the default policy.
+
+Tests use an explicit test-only KDF policy for fast round trips. Production
+defaults are not weakened silently to make tests pass.
 
 ## Negative Tests
 
@@ -46,7 +51,7 @@ CLI smoke tests should verify `cairn --help`, `cairn --version`, and placeholder
 
 ## Secret Leakage Tests
 
-Secret leakage tests should verify that errors, debug output, CLI output, logs, panic paths, and future telemetry/crash surfaces do not include item secrets, passphrases, derived keys, root keys, wrapped key bytes, or recovery material.
+Secret leakage tests should verify that errors, debug output, CLI output, logs, panic paths, and future telemetry/crash surfaces do not include item secrets, passphrases, plaintext payloads, derived keys, root keys, wrapped key bytes, or recovery material.
 
 ## Recovery Rehearsal Tests
 

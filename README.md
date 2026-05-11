@@ -22,7 +22,7 @@ The MVP direction is a Rust core, a CLI-first workflow, and a monolithic encrypt
 ```text
 cairn/
   crates/
-    cairn-core/  security-sensitive core types and CVF-1 envelope parsing
+    cairn-core/  security-sensitive core types and CVF-1 opaque envelope crypto
     cairn-cli/   thin CLI command surface
   docs/          product, security, format, recovery, test, roadmap, and ADR docs
 ```

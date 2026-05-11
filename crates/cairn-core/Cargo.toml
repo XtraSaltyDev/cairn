@@ -9,3 +9,8 @@ description = "Core types and vault format scaffolding for Cairn."
 [lib]
 path = "src/lib.rs"
 
+[dependencies]
+argon2 = "0.5"
+chacha20poly1305 = { version = "0.10", features = ["alloc"] }
+rand_core = { version = "0.6", features = ["getrandom"] }
+zeroize = "1.8"

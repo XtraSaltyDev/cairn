@@ -1,5 +1,13 @@
 use std::fmt;
 
+use argon2::{Algorithm, Argon2, Params, Version};
+use chacha20poly1305::{
+    aead::{Aead, KeyInit, Payload},
+    XChaCha20Poly1305, XNonce,
+};
+use rand_core::{OsRng, RngCore};
+use zeroize::Zeroizing;
+
 use crate::error::CairnError;
 
 pub const FORMAT_NAME: &str = "Cairn Vault Format version 1";
@@ -11,9 +19,15 @@ pub const SCHEMA_VERSION: u16 = 1;
 pub const CRYPTO_SUITE_XCHACHA20_POLY1305: u16 = 1;
 pub const KDF_SUITE_ARGON2ID: u16 = 1;
 pub const FLAGS_NONE: u32 = 0;
-pub const PAYLOAD_NONCE_LEN: usize = 24;
-pub const SALT_LEN: usize = 16;
-pub const WRAPPED_ROOT_KEY_LEN: usize = 48;
+pub const ROOT_KEY_LEN: usize = 32;
+pub const DERIVED_KEY_LEN: usize = 32;
+pub const KDF_SALT_LEN: usize = 16;
+pub const SALT_LEN: usize = KDF_SALT_LEN;
+pub const XCHACHA20_POLY1305_NONCE_LEN: usize = 24;
+pub const AEAD_TAG_LEN: usize = 16;
+pub const WRAPPED_ROOT_KEY_LEN: usize = ROOT_KEY_LEN + AEAD_TAG_LEN;
+pub const PAYLOAD_NONCE_LEN: usize = XCHACHA20_POLY1305_NONCE_LEN;
+pub const ROOT_KEY_WRAP_NONCE_LEN: usize = XCHACHA20_POLY1305_NONCE_LEN;
 pub const MAX_HEADER_LEN: usize = 4096;
 
 pub(crate) const MAGIC_LEN: usize = MAGIC_BYTES.len();
@@ -31,11 +45,15 @@ pub(crate) const BODY_ARGON_PARALLELISM_OFFSET: usize = BODY_ARGON_TIME_COST_OFF
 pub(crate) const BODY_ARGON_OUTPUT_LEN_OFFSET: usize = BODY_ARGON_PARALLELISM_OFFSET + 4;
 pub(crate) const BODY_SALT_LEN_OFFSET: usize = BODY_ARGON_OUTPUT_LEN_OFFSET + 4;
 pub(crate) const BODY_SALT_OFFSET: usize = BODY_SALT_LEN_OFFSET + 2;
-pub(crate) const BODY_WRAPPED_ROOT_KEY_LEN_OFFSET: usize = BODY_SALT_OFFSET + SALT_LEN;
+pub(crate) const BODY_ROOT_KEY_WRAP_NONCE_LEN_OFFSET: usize = BODY_SALT_OFFSET + KDF_SALT_LEN;
+pub(crate) const BODY_ROOT_KEY_WRAP_NONCE_OFFSET: usize = BODY_ROOT_KEY_WRAP_NONCE_LEN_OFFSET + 2;
+pub(crate) const BODY_WRAPPED_ROOT_KEY_LEN_OFFSET: usize =
+    BODY_ROOT_KEY_WRAP_NONCE_OFFSET + ROOT_KEY_WRAP_NONCE_LEN;
 pub(crate) const BODY_WRAPPED_ROOT_KEY_OFFSET: usize = BODY_WRAPPED_ROOT_KEY_LEN_OFFSET + 2;
-pub(crate) const BODY_NONCE_LEN_OFFSET: usize = BODY_WRAPPED_ROOT_KEY_OFFSET + WRAPPED_ROOT_KEY_LEN;
-pub(crate) const BODY_NONCE_OFFSET: usize = BODY_NONCE_LEN_OFFSET + 2;
-pub(crate) const HEADER_BODY_LEN: usize = BODY_NONCE_OFFSET + PAYLOAD_NONCE_LEN;
+pub(crate) const BODY_PAYLOAD_NONCE_LEN_OFFSET: usize =
+    BODY_WRAPPED_ROOT_KEY_OFFSET + WRAPPED_ROOT_KEY_LEN;
+pub(crate) const BODY_PAYLOAD_NONCE_OFFSET: usize = BODY_PAYLOAD_NONCE_LEN_OFFSET + 2;
+pub(crate) const HEADER_BODY_LEN: usize = BODY_PAYLOAD_NONCE_OFFSET + PAYLOAD_NONCE_LEN;
 
 #[derive(Clone, Eq, PartialEq)]
 pub struct Argon2idParameters {
@@ -46,17 +64,41 @@ pub struct Argon2idParameters {
 }
 
 impl Argon2idParameters {
+    pub const fn new(
+        memory_cost_kib: u32,
+        time_cost: u32,
+        parallelism: u32,
+        output_len: u32,
+    ) -> Self {
+        Self {
+            memory_cost_kib,
+            time_cost,
+            parallelism,
+            output_len,
+        }
+    }
+
     pub const fn cvf1_default() -> Self {
         Self {
             memory_cost_kib: 194_560,
             time_cost: 2,
             parallelism: 1,
-            output_len: 32,
+            output_len: DERIVED_KEY_LEN as u32,
         }
     }
 
     pub const fn design_draft() -> Self {
         Self::cvf1_default()
+    }
+
+    #[cfg(test)]
+    const fn test_only_fast() -> Self {
+        Self {
+            memory_cost_kib: 8,
+            time_cost: 1,
+            parallelism: 1,
+            output_len: DERIVED_KEY_LEN as u32,
+        }
     }
 
     pub fn memory_cost_kib(&self) -> u32 {
@@ -75,8 +117,17 @@ impl Argon2idParameters {
         self.output_len
     }
 
-    fn matches_cvf1_policy(&self) -> bool {
-        self == &Self::cvf1_default()
+    fn to_argon2_params(&self) -> Result<Params, CairnError> {
+        Params::new(
+            self.memory_cost_kib,
+            self.time_cost,
+            self.parallelism,
+            Some(
+                usize::try_from(self.output_len)
+                    .map_err(|_| CairnError::InvalidKdfParameters("Argon2id output length"))?,
+            ),
+        )
+        .map_err(|_| CairnError::InvalidKdfParameters("Argon2id parameters rejected by library"))
     }
 }
 
@@ -88,6 +139,80 @@ impl fmt::Debug for Argon2idParameters {
             .field("time_cost", &self.time_cost)
             .field("parallelism", &self.parallelism)
             .field("output_len", &self.output_len)
+            .finish()
+    }
+}
+
+#[derive(Clone, Eq, PartialEq)]
+pub struct KdfPolicy {
+    minimum_memory_cost_kib: u32,
+    minimum_time_cost: u32,
+    minimum_parallelism: u32,
+    required_output_len: u32,
+}
+
+impl KdfPolicy {
+    pub const fn cvf1_default() -> Self {
+        let parameters = Argon2idParameters::cvf1_default();
+        Self {
+            minimum_memory_cost_kib: parameters.memory_cost_kib,
+            minimum_time_cost: parameters.time_cost,
+            minimum_parallelism: parameters.parallelism,
+            required_output_len: parameters.output_len,
+        }
+    }
+
+    #[cfg(test)]
+    const fn test_only_fast() -> Self {
+        let parameters = Argon2idParameters::test_only_fast();
+        Self {
+            minimum_memory_cost_kib: parameters.memory_cost_kib,
+            minimum_time_cost: parameters.time_cost,
+            minimum_parallelism: parameters.parallelism,
+            required_output_len: parameters.output_len,
+        }
+    }
+
+    fn validate(&self, parameters: &Argon2idParameters) -> Result<(), CairnError> {
+        if parameters.output_len != self.required_output_len
+            || parameters.output_len != DERIVED_KEY_LEN as u32
+        {
+            return Err(CairnError::InvalidKdfParameters(
+                "Argon2id output length does not match policy",
+            ));
+        }
+
+        if parameters.memory_cost_kib < self.minimum_memory_cost_kib {
+            return Err(CairnError::InvalidKdfParameters(
+                "Argon2id memory cost is below policy",
+            ));
+        }
+
+        if parameters.time_cost < self.minimum_time_cost {
+            return Err(CairnError::InvalidKdfParameters(
+                "Argon2id time cost is below policy",
+            ));
+        }
+
+        if parameters.parallelism < self.minimum_parallelism {
+            return Err(CairnError::InvalidKdfParameters(
+                "Argon2id parallelism is below policy",
+            ));
+        }
+
+        parameters.to_argon2_params()?;
+        Ok(())
+    }
+}
+
+impl fmt::Debug for KdfPolicy {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("KdfPolicy")
+            .field("minimum_memory_cost_kib", &self.minimum_memory_cost_kib)
+            .field("minimum_time_cost", &self.minimum_time_cost)
+            .field("minimum_parallelism", &self.minimum_parallelism)
+            .field("required_output_len", &self.required_output_len)
             .finish()
     }
 }
@@ -132,6 +257,7 @@ pub struct VaultHeaderDesign {
     kdf_suite_id: u16,
     kdf_parameters: Argon2idParameters,
     salt_len: usize,
+    root_key_wrap_nonce_len: usize,
     wrapped_root_key_slots: usize,
     payload_nonce_len: usize,
     flags: u32,
@@ -144,7 +270,8 @@ impl VaultHeaderDesign {
             crypto_suite_id: CRYPTO_SUITE_XCHACHA20_POLY1305,
             kdf_suite_id: KDF_SUITE_ARGON2ID,
             kdf_parameters: Argon2idParameters::cvf1_default(),
-            salt_len: SALT_LEN,
+            salt_len: KDF_SALT_LEN,
+            root_key_wrap_nonce_len: ROOT_KEY_WRAP_NONCE_LEN,
             wrapped_root_key_slots: 1,
             payload_nonce_len: PAYLOAD_NONCE_LEN,
             flags: FLAGS_NONE,
@@ -171,6 +298,10 @@ impl VaultHeaderDesign {
         self.salt_len
     }
 
+    pub fn root_key_wrap_nonce_len(&self) -> usize {
+        self.root_key_wrap_nonce_len
+    }
+
     pub fn wrapped_root_key_slots(&self) -> usize {
         self.wrapped_root_key_slots
     }
@@ -193,6 +324,7 @@ impl fmt::Debug for VaultHeaderDesign {
             .field("kdf_suite_id", &self.kdf_suite_id)
             .field("kdf_parameters", &self.kdf_parameters)
             .field("salt_len", &self.salt_len)
+            .field("root_key_wrap_nonce_len", &self.root_key_wrap_nonce_len)
             .field("wrapped_root_key_slots", &self.wrapped_root_key_slots)
             .field("payload_nonce_len", &self.payload_nonce_len)
             .field("flags", &self.flags)
@@ -208,6 +340,7 @@ pub struct CvfHeader {
     flags: u32,
     kdf_parameters: Argon2idParameters,
     kdf_salt: Vec<u8>,
+    root_key_wrap_nonce: Vec<u8>,
     wrapped_root_key: Vec<u8>,
     payload_nonce: Vec<u8>,
 }
@@ -216,6 +349,7 @@ impl CvfHeader {
     pub fn new(
         kdf_parameters: Argon2idParameters,
         kdf_salt: Vec<u8>,
+        root_key_wrap_nonce: Vec<u8>,
         wrapped_root_key: Vec<u8>,
         payload_nonce: Vec<u8>,
         flags: u32,
@@ -227,6 +361,7 @@ impl CvfHeader {
             flags,
             kdf_parameters,
             kdf_salt,
+            root_key_wrap_nonce,
             wrapped_root_key,
             payload_nonce,
         })
@@ -256,6 +391,10 @@ impl CvfHeader {
         &self.kdf_salt
     }
 
+    pub fn root_key_wrap_nonce(&self) -> &[u8] {
+        &self.root_key_wrap_nonce
+    }
+
     pub fn wrapped_root_key(&self) -> &[u8] {
         &self.wrapped_root_key
     }
@@ -272,6 +411,7 @@ impl CvfHeader {
             flags: parts.flags,
             kdf_parameters: parts.kdf_parameters,
             kdf_salt: parts.kdf_salt,
+            root_key_wrap_nonce: parts.root_key_wrap_nonce,
             wrapped_root_key: parts.wrapped_root_key,
             payload_nonce: parts.payload_nonce,
         };
@@ -305,14 +445,14 @@ impl CvfHeader {
             return Err(CairnError::MalformedHeader("unsupported CVF-1 flags"));
         }
 
-        if !self.kdf_parameters.matches_cvf1_policy() {
-            return Err(CairnError::SecurityPolicyViolation(
-                "Argon2id parameters do not match CVF-1 policy",
-            ));
+        if self.kdf_salt.len() != KDF_SALT_LEN {
+            return Err(CairnError::InvalidLength { field: "kdf_salt" });
         }
 
-        if self.kdf_salt.len() != SALT_LEN {
-            return Err(CairnError::InvalidLength { field: "kdf_salt" });
+        if self.root_key_wrap_nonce.len() != ROOT_KEY_WRAP_NONCE_LEN {
+            return Err(CairnError::InvalidLength {
+                field: "root_key_wrap_nonce",
+            });
         }
 
         if self.wrapped_root_key.len() != WRAPPED_ROOT_KEY_LEN {
@@ -330,6 +470,10 @@ impl CvfHeader {
         Ok(())
     }
 
+    fn validate_kdf_policy(&self, policy: &KdfPolicy) -> Result<(), CairnError> {
+        policy.validate(&self.kdf_parameters)
+    }
+
     fn encode_body(&self) -> Result<Vec<u8>, CairnError> {
         self.validate()?;
 
@@ -344,6 +488,12 @@ impl CvfHeader {
         write_u32(&mut output, self.kdf_parameters.output_len());
         write_len_u16(&mut output, self.kdf_salt.len(), "kdf_salt")?;
         output.extend_from_slice(&self.kdf_salt);
+        write_len_u16(
+            &mut output,
+            self.root_key_wrap_nonce.len(),
+            "root_key_wrap_nonce",
+        )?;
+        output.extend_from_slice(&self.root_key_wrap_nonce);
         write_len_u16(&mut output, self.wrapped_root_key.len(), "wrapped_root_key")?;
         output.extend_from_slice(&self.wrapped_root_key);
         write_len_u16(&mut output, self.payload_nonce.len(), "payload_nonce")?;
@@ -372,10 +522,18 @@ impl CvfHeader {
         };
 
         let salt_len = cursor.read_u16()? as usize;
-        if salt_len != SALT_LEN {
+        if salt_len != KDF_SALT_LEN {
             return Err(CairnError::InvalidLength { field: "kdf_salt" });
         }
         let kdf_salt = cursor.read_bytes(salt_len)?.to_vec();
+
+        let root_key_wrap_nonce_len = cursor.read_u16()? as usize;
+        if root_key_wrap_nonce_len != ROOT_KEY_WRAP_NONCE_LEN {
+            return Err(CairnError::InvalidLength {
+                field: "root_key_wrap_nonce",
+            });
+        }
+        let root_key_wrap_nonce = cursor.read_bytes(root_key_wrap_nonce_len)?.to_vec();
 
         let wrapped_root_key_len = cursor.read_u16()? as usize;
         if wrapped_root_key_len != WRAPPED_ROOT_KEY_LEN {
@@ -406,6 +564,7 @@ impl CvfHeader {
             flags,
             kdf_parameters,
             kdf_salt,
+            root_key_wrap_nonce,
             wrapped_root_key,
             payload_nonce,
         })
@@ -422,6 +581,7 @@ impl fmt::Debug for CvfHeader {
             .field("flags", &self.flags)
             .field("kdf_parameters", &self.kdf_parameters)
             .field("kdf_salt_len", &self.kdf_salt.len())
+            .field("root_key_wrap_nonce_len", &self.root_key_wrap_nonce.len())
             .field("wrapped_root_key_len", &self.wrapped_root_key.len())
             .field("payload_nonce_len", &self.payload_nonce.len())
             .finish()
@@ -435,6 +595,7 @@ struct CvfHeaderParts {
     flags: u32,
     kdf_parameters: Argon2idParameters,
     kdf_salt: Vec<u8>,
+    root_key_wrap_nonce: Vec<u8>,
     wrapped_root_key: Vec<u8>,
     payload_nonce: Vec<u8>,
 }
@@ -475,17 +636,13 @@ impl CvfEnvelope {
             return Err(CairnError::InvalidLength { field: "header" });
         }
 
-        let header_len = u32::try_from(header_body.len())
-            .map_err(|_| CairnError::InvalidLength { field: "header" })?;
         let capacity = PREFIX_LEN
             .checked_add(header_body.len())
             .and_then(|len| len.checked_add(self.payload_ciphertext.len()))
             .ok_or(CairnError::InvalidLength { field: "envelope" })?;
 
         let mut output = Vec::with_capacity(capacity);
-        output.extend_from_slice(&MAGIC_BYTES);
-        write_u16(&mut output, FORMAT_VERSION);
-        write_u32(&mut output, header_len);
+        output.extend_from_slice(&encode_prefix(header_body.len())?);
         output.extend_from_slice(&header_body);
         output.extend_from_slice(&self.payload_ciphertext);
 
@@ -501,6 +658,120 @@ impl fmt::Debug for CvfEnvelope {
             .field("payload_ciphertext_len", &self.payload_ciphertext.len())
             .finish()
     }
+}
+
+pub fn create_encrypted_envelope(
+    passphrase: &[u8],
+    plaintext_payload: &[u8],
+) -> Result<Vec<u8>, CairnError> {
+    create_encrypted_envelope_with_policy(
+        passphrase,
+        plaintext_payload,
+        Argon2idParameters::cvf1_default(),
+        &KdfPolicy::cvf1_default(),
+    )
+}
+
+fn create_encrypted_envelope_with_policy(
+    passphrase: &[u8],
+    plaintext_payload: &[u8],
+    kdf_parameters: Argon2idParameters,
+    policy: &KdfPolicy,
+) -> Result<Vec<u8>, CairnError> {
+    policy.validate(&kdf_parameters)?;
+
+    let mut kdf_salt = [0u8; KDF_SALT_LEN];
+    let mut root_key_wrap_nonce = [0u8; ROOT_KEY_WRAP_NONCE_LEN];
+    let mut payload_nonce = [0u8; PAYLOAD_NONCE_LEN];
+    let mut root_key = Zeroizing::new([0u8; ROOT_KEY_LEN]);
+
+    fill_random(&mut kdf_salt)?;
+    fill_random(&mut root_key_wrap_nonce)?;
+    fill_random(&mut payload_nonce)?;
+    fill_random(&mut root_key[..])?;
+
+    let derived_key = derive_key(passphrase, &kdf_parameters, &kdf_salt, policy)?;
+    let root_key_wrap_header = CvfHeader::new(
+        kdf_parameters.clone(),
+        kdf_salt.to_vec(),
+        root_key_wrap_nonce.to_vec(),
+        vec![0u8; WRAPPED_ROOT_KEY_LEN],
+        payload_nonce.to_vec(),
+        FLAGS_NONE,
+    )?;
+    let root_key_wrap_aad = canonical_root_key_wrap_aad(&root_key_wrap_header)?;
+    let wrapped_root_key = encrypt_aead(
+        &derived_key[..],
+        &root_key_wrap_nonce,
+        &root_key[..],
+        &root_key_wrap_aad,
+    )?;
+    if wrapped_root_key.len() != WRAPPED_ROOT_KEY_LEN {
+        return Err(CairnError::InvalidLength {
+            field: "wrapped_root_key",
+        });
+    }
+
+    let header = CvfHeader::new(
+        kdf_parameters,
+        kdf_salt.to_vec(),
+        root_key_wrap_nonce.to_vec(),
+        wrapped_root_key,
+        payload_nonce.to_vec(),
+        FLAGS_NONE,
+    )?;
+    let payload_aad = canonical_payload_aad(&header)?;
+    let payload_ciphertext = encrypt_aead(
+        &root_key[..],
+        &payload_nonce,
+        plaintext_payload,
+        &payload_aad,
+    )?;
+
+    CvfEnvelope::new(header, payload_ciphertext)?.encode()
+}
+
+pub fn decrypt_envelope(passphrase: &[u8], envelope_bytes: &[u8]) -> Result<Vec<u8>, CairnError> {
+    decrypt_envelope_with_policy(passphrase, envelope_bytes, &KdfPolicy::cvf1_default())
+}
+
+fn decrypt_envelope_with_policy(
+    passphrase: &[u8],
+    envelope_bytes: &[u8],
+    policy: &KdfPolicy,
+) -> Result<Vec<u8>, CairnError> {
+    let envelope = parse_envelope(envelope_bytes)?;
+    let header = envelope.header();
+
+    header.validate_kdf_policy(policy)?;
+
+    let derived_key = derive_key(
+        passphrase,
+        header.kdf_parameters(),
+        header.kdf_salt(),
+        policy,
+    )?;
+    let root_key_wrap_aad = canonical_root_key_wrap_aad(header)?;
+    let unwrapped_root_key = Zeroizing::new(decrypt_aead(
+        &derived_key[..],
+        header.root_key_wrap_nonce(),
+        header.wrapped_root_key(),
+        &root_key_wrap_aad,
+    )?);
+    if unwrapped_root_key.len() != ROOT_KEY_LEN {
+        return Err(CairnError::AuthenticationFailed);
+    }
+
+    let mut root_key = Zeroizing::new([0u8; ROOT_KEY_LEN]);
+    root_key.copy_from_slice(&unwrapped_root_key);
+
+    let payload_aad = canonical_payload_aad(header)?;
+    decrypt_aead(
+        &root_key[..],
+        header.payload_nonce(),
+        envelope.payload_ciphertext(),
+        &payload_aad,
+    )
 }
 
 pub fn parse_envelope(input: &[u8]) -> Result<CvfEnvelope, CairnError> {
@@ -550,6 +821,137 @@ pub fn parse_envelope(input: &[u8]) -> Result<CvfEnvelope, CairnError> {
     let payload_ciphertext = input[header_end..].to_vec();
 
     CvfEnvelope::new(header, payload_ciphertext)
+}
+
+fn fill_random(bytes: &mut [u8]) -> Result<(), CairnError> {
+    let mut rng = OsRng;
+    rng.try_fill_bytes(bytes)
+        .map_err(|_| CairnError::RandomSourceFailed)
+}
+
+fn derive_key(
+    passphrase: &[u8],
+    parameters: &Argon2idParameters,
+    salt: &[u8],
+    policy: &KdfPolicy,
+) -> Result<Zeroizing<[u8; DERIVED_KEY_LEN]>, CairnError> {
+    policy.validate(parameters)?;
+    if salt.len() != KDF_SALT_LEN {
+        return Err(CairnError::InvalidLength { field: "kdf_salt" });
+    }
+
+    let params = parameters.to_argon2_params()?;
+    let argon2 = Argon2::new(Algorithm::Argon2id, Version::V0x13, params);
+    let mut derived_key = Zeroizing::new([0u8; DERIVED_KEY_LEN]);
+    argon2
+        .hash_password_into(passphrase, salt, &mut derived_key[..])
+        .map_err(|_| CairnError::InvalidKdfParameters("Argon2id derivation failed"))?;
+
+    Ok(derived_key)
+}
+
+fn encrypt_aead(
+    key: &[u8],
+    nonce: &[u8],
+    plaintext: &[u8],
+    aad: &[u8],
+) -> Result<Vec<u8>, CairnError> {
+    let cipher = cipher_from_key(key)?;
+    validate_xchacha_nonce(nonce)?;
+    cipher
+        .encrypt(
+            XNonce::from_slice(nonce),
+            Payload {
+                msg: plaintext,
+                aad,
+            },
+        )
+        .map_err(|_| CairnError::AuthenticationFailed)
+}
+
+fn decrypt_aead(
+    key: &[u8],
+    nonce: &[u8],
+    ciphertext: &[u8],
+    aad: &[u8],
+) -> Result<Vec<u8>, CairnError> {
+    let cipher = cipher_from_key(key)?;
+    validate_xchacha_nonce(nonce)?;
+    cipher
+        .decrypt(
+            XNonce::from_slice(nonce),
+            Payload {
+                msg: ciphertext,
+                aad,
+            },
+        )
+        .map_err(|_| CairnError::AuthenticationFailed)
+}
+
+fn cipher_from_key(key: &[u8]) -> Result<XChaCha20Poly1305, CairnError> {
+    if key.len() != ROOT_KEY_LEN {
+        return Err(CairnError::InvalidLength { field: "aead_key" });
+    }
+    XChaCha20Poly1305::new_from_slice(key)
+        .map_err(|_| CairnError::InvalidLength { field: "aead_key" })
+}
+
+fn validate_xchacha_nonce(nonce: &[u8]) -> Result<(), CairnError> {
+    if nonce.len() != XCHACHA20_POLY1305_NONCE_LEN {
+        return Err(CairnError::InvalidLength {
+            field: "xchacha20_poly1305_nonce",
+        });
+    }
+    Ok(())
+}
+
+fn canonical_payload_aad(header: &CvfHeader) -> Result<Vec<u8>, CairnError> {
+    let header_body = header.encode_body()?;
+    let mut aad = encode_prefix(header_body.len())?;
+    aad.extend_from_slice(&header_body);
+    Ok(aad)
+}
+
+fn canonical_root_key_wrap_aad(header: &CvfHeader) -> Result<Vec<u8>, CairnError> {
+    header.validate()?;
+
+    let mut aad = Vec::with_capacity(
+        MAGIC_LEN + 2 + BODY_ROOT_KEY_WRAP_NONCE_OFFSET + ROOT_KEY_WRAP_NONCE_LEN
+            - BODY_SCHEMA_VERSION_OFFSET,
+    );
+    aad.extend_from_slice(&MAGIC_BYTES);
+    write_u16(&mut aad, FORMAT_VERSION);
+    write_u16(&mut aad, header.schema_version);
+    write_u16(&mut aad, header.crypto_suite_id);
+    write_u16(&mut aad, header.kdf_suite_id);
+    write_u32(&mut aad, header.flags);
+    write_u32(&mut aad, header.kdf_parameters.memory_cost_kib());
+    write_u32(&mut aad, header.kdf_parameters.time_cost());
+    write_u32(&mut aad, header.kdf_parameters.parallelism());
+    write_u32(&mut aad, header.kdf_parameters.output_len());
+    write_len_u16(&mut aad, header.kdf_salt.len(), "kdf_salt")?;
+    aad.extend_from_slice(&header.kdf_salt);
+    write_len_u16(
+        &mut aad,
+        header.root_key_wrap_nonce.len(),
+        "root_key_wrap_nonce",
+    )?;
+    aad.extend_from_slice(&header.root_key_wrap_nonce);
+    Ok(aad)
+}
+
+fn encode_prefix(header_body_len: usize) -> Result<Vec<u8>, CairnError> {
+    if header_body_len > MAX_HEADER_LEN {
+        return Err(CairnError::InvalidLength { field: "header" });
+    }
+
+    let header_len = u32::try_from(header_body_len)
+        .map_err(|_| CairnError::InvalidLength { field: "header" })?;
+    let mut output = Vec::with_capacity(PREFIX_LEN);
+    output.extend_from_slice(&MAGIC_BYTES);
+    write_u16(&mut output, FORMAT_VERSION);
+    write_u32(&mut output, header_len);
+    Ok(output)
 }
 
 fn write_u16(output: &mut Vec<u8>, value: u16) {
@@ -612,6 +1014,10 @@ mod tests {
         0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1a, 0x1b, 0x1c, 0x1d, 0x1e,
         0x1f,
     ];
+    const TEST_ROOT_KEY_WRAP_NONCE: [u8; ROOT_KEY_WRAP_NONCE_LEN] = [
+        0x20, 0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x27, 0x28, 0x29, 0x2a, 0x2b, 0x2c, 0x2d, 0x2e,
+        0x2f, 0x30, 0x31, 0x32, 0x33, 0x34, 0x35, 0x36, 0x37,
+    ];
     const TEST_WRAPPED_ROOT_KEY: [u8; WRAPPED_ROOT_KEY_LEN] = [
         0x40, 0x41, 0x42, 0x43, 0x44, 0x45, 0x46, 0x47, 0x48, 0x49, 0x4a, 0x4b, 0x4c, 0x4d, 0x4e,
         0x4f, 0x50, 0x51, 0x52, 0x53, 0x54, 0x55, 0x56, 0x57, 0x58, 0x59, 0x5a, 0x5b, 0x5c, 0x5d,
@@ -623,11 +1029,15 @@ mod tests {
         0x8f, 0x90, 0x91, 0x92, 0x93, 0x94, 0x95, 0x96, 0x97,
     ];
     const TEST_PAYLOAD: [u8; 5] = [0xa0, 0xa1, 0xa2, 0xa3, 0xa4];
+    const TEST_PASSPHRASE: &[u8] = b"test-passphrase-not-a-real-secret";
+    const WRONG_TEST_PASSPHRASE: &[u8] = b"wrong-test-passphrase-not-a-real-secret";
+    const TEST_PLAINTEXT_PAYLOAD: &[u8] = b"opaque test payload bytes";
 
     fn valid_header() -> CvfHeader {
         CvfHeader::new(
             Argon2idParameters::cvf1_default(),
             TEST_SALT.to_vec(),
+            TEST_ROOT_KEY_WRAP_NONCE.to_vec(),
             TEST_WRAPPED_ROOT_KEY.to_vec(),
             TEST_NONCE.to_vec(),
             FLAGS_NONE,
@@ -646,6 +1056,24 @@ mod tests {
             .expect("test envelope should encode")
     }
 
+    fn test_kdf_parameters() -> Argon2idParameters {
+        Argon2idParameters::test_only_fast()
+    }
+
+    fn test_kdf_policy() -> KdfPolicy {
+        KdfPolicy::test_only_fast()
+    }
+
+    fn encrypted_test_envelope_bytes() -> Vec<u8> {
+        create_encrypted_envelope_with_policy(
+            TEST_PASSPHRASE,
+            TEST_PLAINTEXT_PAYLOAD,
+            test_kdf_parameters(),
+            &test_kdf_policy(),
+        )
+        .expect("test envelope should encrypt")
+    }
+
     fn write_u16(bytes: &mut [u8], offset: usize, value: u16) {
         bytes[offset..offset + 2].copy_from_slice(&value.to_be_bytes());
     }
@@ -662,6 +1090,7 @@ mod tests {
         assert_eq!(design.crypto_suite_id(), CRYPTO_SUITE_XCHACHA20_POLY1305);
         assert_eq!(design.kdf_suite_id(), KDF_SUITE_ARGON2ID);
         assert_eq!(design.salt_len(), SALT_LEN);
+        assert_eq!(design.root_key_wrap_nonce_len(), ROOT_KEY_WRAP_NONCE_LEN);
         assert_eq!(design.payload_nonce_len(), PAYLOAD_NONCE_LEN);
         assert_eq!(design.wrapped_root_key_slots(), 1);
         assert_eq!(design.flags(), 0);
@@ -683,6 +1112,7 @@ mod tests {
 
         assert!(debug_output.contains("payload_ciphertext_len"));
         assert!(debug_output.contains("wrapped_root_key_len"));
+        assert!(debug_output.contains("root_key_wrap_nonce_len"));
         assert!(!debug_output.contains("64, 65, 66"));
         assert!(!debug_output.contains("160, 161, 162"));
     }
@@ -702,6 +1132,200 @@ mod tests {
         assert_eq!(decoded.header().kdf_suite_id(), KDF_SUITE_ARGON2ID);
         assert_eq!(decoded.payload_ciphertext(), TEST_PAYLOAD);
         assert_eq!(encoded, decoded.encode().expect("roundtrip should encode"));
+    }
+
+    #[test]
+    fn encrypt_decrypt_roundtrip_payload() {
+        let encrypted = encrypted_test_envelope_bytes();
+        let decrypted =
+            decrypt_envelope_with_policy(TEST_PASSPHRASE, &encrypted, &test_kdf_policy())
+                .expect("test envelope should decrypt");
+
+        assert_eq!(decrypted, TEST_PLAINTEXT_PAYLOAD);
+    }
+
+    #[test]
+    fn decrypt_rejects_wrong_passphrase() {
+        let encrypted = encrypted_test_envelope_bytes();
+
+        assert_eq!(
+            decrypt_envelope_with_policy(WRONG_TEST_PASSPHRASE, &encrypted, &test_kdf_policy()),
+            Err(CairnError::AuthenticationFailed)
+        );
+    }
+
+    #[test]
+    fn decrypt_rejects_modified_payload_ciphertext() {
+        let mut encrypted = encrypted_test_envelope_bytes();
+        encrypted[PREFIX_LEN + HEADER_BODY_LEN] ^= 0x01;
+
+        assert_eq!(
+            decrypt_envelope_with_policy(TEST_PASSPHRASE, &encrypted, &test_kdf_policy()),
+            Err(CairnError::AuthenticationFailed)
+        );
+    }
+
+    #[test]
+    fn decrypt_rejects_modified_payload_tag() {
+        let mut encrypted = encrypted_test_envelope_bytes();
+        let last = encrypted.len() - 1;
+        encrypted[last] ^= 0x01;
+
+        assert_eq!(
+            decrypt_envelope_with_policy(TEST_PASSPHRASE, &encrypted, &test_kdf_policy()),
+            Err(CairnError::AuthenticationFailed)
+        );
+    }
+
+    #[test]
+    fn decrypt_rejects_modified_payload_nonce() {
+        let mut encrypted = encrypted_test_envelope_bytes();
+        encrypted[PREFIX_LEN + BODY_PAYLOAD_NONCE_OFFSET] ^= 0x01;
+
+        assert_eq!(
+            decrypt_envelope_with_policy(TEST_PASSPHRASE, &encrypted, &test_kdf_policy()),
+            Err(CairnError::AuthenticationFailed)
+        );
+    }
+
+    #[test]
+    fn decrypt_rejects_modified_header_aad() {
+        let mut encrypted = encrypted_test_envelope_bytes();
+        write_u16(
+            &mut encrypted,
+            PREFIX_LEN + BODY_SCHEMA_VERSION_OFFSET,
+            SCHEMA_VERSION + 1,
+        );
+
+        assert!(
+            decrypt_envelope_with_policy(TEST_PASSPHRASE, &encrypted, &test_kdf_policy()).is_err()
+        );
+    }
+
+    #[test]
+    fn decrypt_rejects_modified_kdf_salt() {
+        let mut encrypted = encrypted_test_envelope_bytes();
+        encrypted[PREFIX_LEN + BODY_SALT_OFFSET] ^= 0x01;
+
+        assert_eq!(
+            decrypt_envelope_with_policy(TEST_PASSPHRASE, &encrypted, &test_kdf_policy()),
+            Err(CairnError::AuthenticationFailed)
+        );
+    }
+
+    #[test]
+    fn decrypt_rejects_modified_argon2_params() {
+        let mut encrypted = encrypted_test_envelope_bytes();
+        write_u32(
+            &mut encrypted,
+            PREFIX_LEN + BODY_ARGON_MEMORY_COST_OFFSET,
+            test_kdf_parameters().memory_cost_kib() + 1,
+        );
+
+        assert_eq!(
+            decrypt_envelope_with_policy(TEST_PASSPHRASE, &encrypted, &test_kdf_policy()),
+            Err(CairnError::AuthenticationFailed)
+        );
+    }
+
+    #[test]
+    fn decrypt_rejects_modified_root_key_wrap_nonce() {
+        let mut encrypted = encrypted_test_envelope_bytes();
+        encrypted[PREFIX_LEN + BODY_ROOT_KEY_WRAP_NONCE_OFFSET] ^= 0x01;
+
+        assert_eq!(
+            decrypt_envelope_with_policy(TEST_PASSPHRASE, &encrypted, &test_kdf_policy()),
+            Err(CairnError::AuthenticationFailed)
+        );
+    }
+
+    #[test]
+    fn decrypt_rejects_modified_wrapped_root_key() {
+        let mut encrypted = encrypted_test_envelope_bytes();
+        encrypted[PREFIX_LEN + BODY_WRAPPED_ROOT_KEY_OFFSET] ^= 0x01;
+
+        assert_eq!(
+            decrypt_envelope_with_policy(TEST_PASSPHRASE, &encrypted, &test_kdf_policy()),
+            Err(CairnError::AuthenticationFailed)
+        );
+    }
+
+    #[test]
+    fn decrypt_rejects_unsupported_crypto_suite() {
+        let mut encrypted = encrypted_test_envelope_bytes();
+        write_u16(&mut encrypted, PREFIX_LEN + BODY_CRYPTO_SUITE_OFFSET, 99);
+
+        assert_eq!(
+            decrypt_envelope_with_policy(TEST_PASSPHRASE, &encrypted, &test_kdf_policy()),
+            Err(CairnError::UnsupportedCryptoSuite {
+                found: 99,
+                supported: CRYPTO_SUITE_XCHACHA20_POLY1305,
+            })
+        );
+    }
+
+    #[test]
+    fn decrypt_rejects_unsupported_kdf_suite() {
+        let mut encrypted = encrypted_test_envelope_bytes();
+        write_u16(&mut encrypted, PREFIX_LEN + BODY_KDF_SUITE_OFFSET, 77);
+
+        assert_eq!(
+            decrypt_envelope_with_policy(TEST_PASSPHRASE, &encrypted, &test_kdf_policy()),
+            Err(CairnError::UnsupportedKdfSuite {
+                found: 77,
+                supported: KDF_SUITE_ARGON2ID,
+            })
+        );
+    }
+
+    #[test]
+    fn decrypt_rejects_weak_kdf_params_under_default_policy() {
+        let encrypted = encrypted_test_envelope_bytes();
+
+        assert_eq!(
+            decrypt_envelope(TEST_PASSPHRASE, &encrypted),
+            Err(CairnError::InvalidKdfParameters(
+                "Argon2id memory cost is below policy"
+            ))
+        );
+    }
+
+    #[test]
+    fn encryption_uses_distinct_random_salt_and_nonces() {
+        let encrypted = encrypted_test_envelope_bytes();
+        let envelope = parse_envelope(&encrypted).expect("encrypted envelope should parse");
+        let header = envelope.header();
+
+        assert_eq!(header.kdf_salt().len(), KDF_SALT_LEN);
+        assert_eq!(header.root_key_wrap_nonce().len(), ROOT_KEY_WRAP_NONCE_LEN);
+        assert_eq!(header.payload_nonce().len(), PAYLOAD_NONCE_LEN);
+        assert_ne!(
+            header.kdf_salt(),
+            &header.root_key_wrap_nonce()[..KDF_SALT_LEN]
+        );
+        assert_ne!(header.kdf_salt(), &header.payload_nonce()[..KDF_SALT_LEN]);
+        assert_ne!(header.root_key_wrap_nonce(), header.payload_nonce());
+    }
+
+    #[test]
+    fn two_encryptions_of_same_payload_are_different() {
+        let first = encrypted_test_envelope_bytes();
+        let second = encrypted_test_envelope_bytes();
+
+        assert_ne!(first, second);
+    }
+
+    #[test]
+    fn debug_output_does_not_include_secret_key_material() {
+        let encrypted = encrypted_test_envelope_bytes();
+        let envelope = parse_envelope(&encrypted).expect("encrypted envelope should parse");
+        let debug_output = format!("{envelope:?}");
+
+        assert!(!debug_output.contains("test-passphrase-not-a-real-secret"));
+        assert!(!debug_output.contains("opaque test payload bytes"));
+        assert!(!debug_output.contains("derived_key"));
+        assert!(!debug_output.contains("root_key: ["));
+        assert!(!debug_output.contains("payload_ciphertext: ["));
     }
 
     #[test]
@@ -799,7 +1423,7 @@ mod tests {
         let mut bytes = valid_envelope_bytes();
         write_u16(
             &mut bytes,
-            PREFIX_LEN + BODY_NONCE_LEN_OFFSET,
+            PREFIX_LEN + BODY_PAYLOAD_NONCE_LEN_OFFSET,
             (PAYLOAD_NONCE_LEN - 1) as u16,
         );
 
@@ -807,6 +1431,23 @@ mod tests {
             parse_envelope(&bytes),
             Err(CairnError::InvalidLength {
                 field: "payload_nonce"
+            })
+        );
+    }
+
+    #[test]
+    fn reject_invalid_root_key_wrap_nonce_length() {
+        let mut bytes = valid_envelope_bytes();
+        write_u16(
+            &mut bytes,
+            PREFIX_LEN + BODY_ROOT_KEY_WRAP_NONCE_LEN_OFFSET,
+            (ROOT_KEY_WRAP_NONCE_LEN - 1) as u16,
+        );
+
+        assert_eq!(
+            parse_envelope(&bytes),
+            Err(CairnError::InvalidLength {
+                field: "root_key_wrap_nonce"
             })
         );
     }

@@ -4,12 +4,14 @@ use std::fmt;
 pub enum CairnError {
     AuthenticationFailed,
     InvalidLength { field: &'static str },
+    InvalidKdfParameters(&'static str),
     InvalidMagic,
     InvalidVaultId,
     InvalidVaultFormat(&'static str),
     MalformedEnvelope(&'static str),
     MalformedHeader(&'static str),
     NotImplemented(&'static str),
+    RandomSourceFailed,
     SecurityPolicyViolation(&'static str),
     TruncatedInput { section: &'static str },
     UnsupportedCryptoSuite { found: u16, supported: u16 },
@@ -22,6 +24,9 @@ impl fmt::Display for CairnError {
         match self {
             Self::AuthenticationFailed => formatter.write_str("authentication failed"),
             Self::InvalidLength { field } => write!(formatter, "{field} length is invalid"),
+            Self::InvalidKdfParameters(reason) => {
+                write!(formatter, "KDF parameters are invalid: {reason}")
+            }
             Self::InvalidMagic => formatter.write_str("vault magic bytes are invalid"),
             Self::InvalidVaultId => formatter.write_str("vault identifier is invalid"),
             Self::InvalidVaultFormat(reason) => {
@@ -34,6 +39,7 @@ impl fmt::Display for CairnError {
                 write!(formatter, "vault header is malformed: {reason}")
             }
             Self::NotImplemented(feature) => write!(formatter, "{feature} is not implemented yet"),
+            Self::RandomSourceFailed => formatter.write_str("secure random source failed"),
             Self::SecurityPolicyViolation(reason) => {
                 write!(formatter, "security policy violation: {reason}")
             }
