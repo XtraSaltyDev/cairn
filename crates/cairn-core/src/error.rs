@@ -15,6 +15,7 @@ pub enum CairnError {
     SecurityPolicyViolation(&'static str),
     TruncatedInput { section: &'static str },
     UnsupportedCryptoSuite { found: u16, supported: u16 },
+    UnsupportedFormatVersion { found: u16, supported: u16 },
     UnsupportedKdfSuite { found: u16, supported: u16 },
     UnsupportedSchemaVersion { found: u16, supported: u16 },
 }
@@ -49,6 +50,10 @@ impl fmt::Display for CairnError {
             Self::UnsupportedCryptoSuite { found, supported } => write!(
                 formatter,
                 "unsupported crypto suite {found}; supported suite is {supported}"
+            ),
+            Self::UnsupportedFormatVersion { found, supported } => write!(
+                formatter,
+                "unsupported format version {found}; supported version is {supported}"
             ),
             Self::UnsupportedKdfSuite { found, supported } => write!(
                 formatter,

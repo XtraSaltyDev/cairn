@@ -6,7 +6,7 @@ These invariants are non-negotiable engineering rules for Cairn.
 - Full header bytes are authenticated as payload AAD.
 - Root-key wrapping metadata is authenticated as wrapping AAD.
 - Wrong password and tampering fail closed.
-- KDF params are explicit and policy-checked.
+- KDF params are explicit and policy-checked with minimum and maximum bounds before derivation.
 - Vault root key is random, not derived directly from the password.
 - The passphrase-derived key wraps the random root key; it does not encrypt
   payload bytes directly.
@@ -21,8 +21,9 @@ These invariants are non-negotiable engineering rules for Cairn.
 ## CVF-1 Parser Invariants
 
 - CVF-1 integers are explicit big-endian values, not library-default serialization.
-- Unknown schema versions, crypto suite IDs, KDF suite IDs, and non-zero flags fail closed.
+- Unknown format versions, schema versions, crypto suite IDs, KDF suite IDs, and non-zero flags fail closed.
 - CVF-1 salt, root-key wrap nonce, wrapped root key, and payload nonce lengths are fixed and validated.
+- CVF-1 header length is exactly 146 bytes; shortened headers, extra header bytes, and non-exact variable lengths fail closed.
 - The parser accepts only an opaque, non-empty ciphertext payload; item storage and unlock-session flows are not implemented yet.
-- The decrypt path rejects weak KDF parameters under the default policy before deriving keys.
+- The decrypt path rejects weak or excessive KDF parameters under the default policy before deriving keys.
 - Debug output reports lengths for secret-bearing fields rather than bytes.

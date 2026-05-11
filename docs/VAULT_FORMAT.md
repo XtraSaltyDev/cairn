@@ -11,10 +11,11 @@ CVF-1 means Cairn Vault Format version 1.
 - Header: minimal cleartext header
 - Payload: encrypted vault snapshot
 
-The current implementation covers deterministic CVF-1 envelope encoding, strict
-header parsing, opaque payload encryption/decryption, and malformed-input
-rejection. Item storage, unlock sessions, recovery, import/export, CLI vault
-commands, and write-path behavior remain future work.
+The current implementation covers deterministic test-only CVF-1 envelope
+encoding, strict header parsing, opaque payload encryption/decryption, and
+malformed-input rejection. Item storage, unlock sessions, recovery kit
+generation, import/export, CLI vault commands, production use, and write-path
+behavior remain future work.
 
 ## Binary Layout
 
@@ -56,9 +57,10 @@ offset  size  field
 122     24    payload nonce bytes
 ```
 
-CVF-1 is still a pre-release draft. Schema version 1 is retained while no stable
-`.cairn` files exist, and this layout may still change before a production
-format is declared.
+CVF-1 is still a pre-release, unaudited draft. Schema version 1 is retained
+while no stable `.cairn` files exist, and this layout may still change before a
+production format is declared. The encoded header length must be exactly 146
+bytes in CVF-1; extra header bytes and shortened headers are rejected.
 
 ## Header Fields
 
@@ -77,12 +79,18 @@ The cleartext header should contain only the minimum non-sensitive data needed t
 
 No plaintext item metadata should exist outside the encrypted payload in v1 unless explicitly approved by ADR.
 
-Unknown schema versions, crypto suite IDs, KDF suite IDs, non-zero flags,
-unexpected fixed lengths, inconsistent header lengths, truncated inputs, and an
-empty payload fail closed. The decrypt path policy-checks the explicit Argon2id
-parameters before deriving keys instead of accepting library defaults. Current
-parameters are pre-release and require final tuning/calibration before
-production use.
+Unknown format versions, schema versions, crypto suite IDs, KDF suite IDs,
+non-zero flags, unexpected fixed lengths, inconsistent header lengths, truncated
+inputs, and an empty payload fail closed. Non-zero flags are rejected in CVF-1
+unless a future ADR defines their meaning. Header length and all variable
+length fields are exact in CVF-1, not extensible padding.
+
+The decrypt path policy-checks the explicit Argon2id parameters before deriving
+keys instead of accepting library defaults. The current default policy requires
+Argon2id output length 32, memory cost 194,560-262,144 KiB, time cost 2-4, and
+parallelism 1-4. Values below minimum or above maximum are rejected before
+Argon2id derivation. Current parameters are pre-release and require final
+tuning/calibration before production use.
 
 ## Payload
 

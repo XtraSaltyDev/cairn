@@ -21,6 +21,12 @@ pub const KDF_SUITE_ARGON2ID: u16 = 1;
 pub const FLAGS_NONE: u32 = 0;
 pub const ROOT_KEY_LEN: usize = 32;
 pub const DERIVED_KEY_LEN: usize = 32;
+pub const CVF1_ARGON2_MEMORY_COST_KIB: u32 = 194_560;
+pub const CVF1_ARGON2_MAX_MEMORY_COST_KIB: u32 = 262_144;
+pub const CVF1_ARGON2_TIME_COST: u32 = 2;
+pub const CVF1_ARGON2_MAX_TIME_COST: u32 = 4;
+pub const CVF1_ARGON2_PARALLELISM: u32 = 1;
+pub const CVF1_ARGON2_MAX_PARALLELISM: u32 = 4;
 pub const KDF_SALT_LEN: usize = 16;
 pub const SALT_LEN: usize = KDF_SALT_LEN;
 pub const XCHACHA20_POLY1305_NONCE_LEN: usize = 24;
@@ -80,9 +86,9 @@ impl Argon2idParameters {
 
     pub const fn cvf1_default() -> Self {
         Self {
-            memory_cost_kib: 194_560,
-            time_cost: 2,
-            parallelism: 1,
+            memory_cost_kib: CVF1_ARGON2_MEMORY_COST_KIB,
+            time_cost: CVF1_ARGON2_TIME_COST,
+            parallelism: CVF1_ARGON2_PARALLELISM,
             output_len: DERIVED_KEY_LEN as u32,
         }
     }
@@ -146,8 +152,11 @@ impl fmt::Debug for Argon2idParameters {
 #[derive(Clone, Eq, PartialEq)]
 pub struct KdfPolicy {
     minimum_memory_cost_kib: u32,
+    maximum_memory_cost_kib: u32,
     minimum_time_cost: u32,
+    maximum_time_cost: u32,
     minimum_parallelism: u32,
+    maximum_parallelism: u32,
     required_output_len: u32,
 }
 
@@ -156,8 +165,11 @@ impl KdfPolicy {
         let parameters = Argon2idParameters::cvf1_default();
         Self {
             minimum_memory_cost_kib: parameters.memory_cost_kib,
+            maximum_memory_cost_kib: CVF1_ARGON2_MAX_MEMORY_COST_KIB,
             minimum_time_cost: parameters.time_cost,
+            maximum_time_cost: CVF1_ARGON2_MAX_TIME_COST,
             minimum_parallelism: parameters.parallelism,
+            maximum_parallelism: CVF1_ARGON2_MAX_PARALLELISM,
             required_output_len: parameters.output_len,
         }
     }
@@ -167,8 +179,11 @@ impl KdfPolicy {
         let parameters = Argon2idParameters::test_only_fast();
         Self {
             minimum_memory_cost_kib: parameters.memory_cost_kib,
+            maximum_memory_cost_kib: 64,
             minimum_time_cost: parameters.time_cost,
+            maximum_time_cost: 3,
             minimum_parallelism: parameters.parallelism,
+            maximum_parallelism: 4,
             required_output_len: parameters.output_len,
         }
     }
@@ -188,15 +203,33 @@ impl KdfPolicy {
             ));
         }
 
+        if parameters.memory_cost_kib > self.maximum_memory_cost_kib {
+            return Err(CairnError::InvalidKdfParameters(
+                "Argon2id memory cost is above policy",
+            ));
+        }
+
         if parameters.time_cost < self.minimum_time_cost {
             return Err(CairnError::InvalidKdfParameters(
                 "Argon2id time cost is below policy",
             ));
         }
 
+        if parameters.time_cost > self.maximum_time_cost {
+            return Err(CairnError::InvalidKdfParameters(
+                "Argon2id time cost is above policy",
+            ));
+        }
+
         if parameters.parallelism < self.minimum_parallelism {
             return Err(CairnError::InvalidKdfParameters(
                 "Argon2id parallelism is below policy",
+            ));
+        }
+
+        if parameters.parallelism > self.maximum_parallelism {
+            return Err(CairnError::InvalidKdfParameters(
+                "Argon2id parallelism is above policy",
             ));
         }
 
@@ -210,8 +243,11 @@ impl fmt::Debug for KdfPolicy {
         formatter
             .debug_struct("KdfPolicy")
             .field("minimum_memory_cost_kib", &self.minimum_memory_cost_kib)
+            .field("maximum_memory_cost_kib", &self.maximum_memory_cost_kib)
             .field("minimum_time_cost", &self.minimum_time_cost)
+            .field("maximum_time_cost", &self.maximum_time_cost)
             .field("minimum_parallelism", &self.minimum_parallelism)
+            .field("maximum_parallelism", &self.maximum_parallelism)
             .field("required_output_len", &self.required_output_len)
             .finish()
     }
@@ -788,7 +824,7 @@ pub fn parse_envelope(input: &[u8]) -> Result<CvfEnvelope, CairnError> {
         input[FORMAT_VERSION_OFFSET + 1],
     ]);
     if format_version != FORMAT_VERSION {
-        return Err(CairnError::UnsupportedSchemaVersion {
+        return Err(CairnError::UnsupportedFormatVersion {
             found: format_version,
             supported: FORMAT_VERSION,
         });
@@ -801,6 +837,9 @@ pub fn parse_envelope(input: &[u8]) -> Result<CvfEnvelope, CairnError> {
         input[HEADER_LENGTH_OFFSET + 3],
     ]) as usize;
     if header_len > MAX_HEADER_LEN {
+        return Err(CairnError::InvalidLength { field: "header" });
+    }
+    if header_len != HEADER_BODY_LEN {
         return Err(CairnError::InvalidLength { field: "header" });
     }
 
@@ -944,6 +983,9 @@ fn encode_prefix(header_body_len: usize) -> Result<Vec<u8>, CairnError> {
     if header_body_len > MAX_HEADER_LEN {
         return Err(CairnError::InvalidLength { field: "header" });
     }
+    if header_body_len != HEADER_BODY_LEN {
+        return Err(CairnError::InvalidLength { field: "header" });
+    }
 
     let header_len = u32::try_from(header_body_len)
         .map_err(|_| CairnError::InvalidLength { field: "header" })?;
@@ -1028,6 +1070,11 @@ mod tests {
         0x80, 0x81, 0x82, 0x83, 0x84, 0x85, 0x86, 0x87, 0x88, 0x89, 0x8a, 0x8b, 0x8c, 0x8d, 0x8e,
         0x8f, 0x90, 0x91, 0x92, 0x93, 0x94, 0x95, 0x96, 0x97,
     ];
+    const TEST_ROOT_KEY: [u8; ROOT_KEY_LEN] = [
+        0xb0, 0xb1, 0xb2, 0xb3, 0xb4, 0xb5, 0xb6, 0xb7, 0xb8, 0xb9, 0xba, 0xbb, 0xbc, 0xbd, 0xbe,
+        0xbf, 0xc0, 0xc1, 0xc2, 0xc3, 0xc4, 0xc5, 0xc6, 0xc7, 0xc8, 0xc9, 0xca, 0xcb, 0xcc, 0xcd,
+        0xce, 0xcf,
+    ];
     const TEST_PAYLOAD: [u8; 5] = [0xa0, 0xa1, 0xa2, 0xa3, 0xa4];
     const TEST_PASSPHRASE: &[u8] = b"test-passphrase-not-a-real-secret";
     const WRONG_TEST_PASSPHRASE: &[u8] = b"wrong-test-passphrase-not-a-real-secret";
@@ -1072,6 +1119,50 @@ mod tests {
             &test_kdf_policy(),
         )
         .expect("test envelope should encrypt")
+    }
+
+    fn deterministic_encrypted_test_envelope_bytes() -> Vec<u8> {
+        let kdf_parameters = test_kdf_parameters();
+        let policy = test_kdf_policy();
+        let derived_key = derive_key(TEST_PASSPHRASE, &kdf_parameters, &TEST_SALT, &policy)
+            .expect("test key derivation should succeed");
+        let provisional_header = CvfHeader::new(
+            kdf_parameters.clone(),
+            TEST_SALT.to_vec(),
+            TEST_ROOT_KEY_WRAP_NONCE.to_vec(),
+            vec![0u8; WRAPPED_ROOT_KEY_LEN],
+            TEST_NONCE.to_vec(),
+            FLAGS_NONE,
+        )
+        .expect("test header should be valid");
+        let wrapped_root_key = encrypt_aead(
+            &derived_key[..],
+            &TEST_ROOT_KEY_WRAP_NONCE,
+            &TEST_ROOT_KEY,
+            &canonical_root_key_wrap_aad(&provisional_header).expect("test wrap AAD should encode"),
+        )
+        .expect("test root key should wrap");
+        let header = CvfHeader::new(
+            kdf_parameters,
+            TEST_SALT.to_vec(),
+            TEST_ROOT_KEY_WRAP_NONCE.to_vec(),
+            wrapped_root_key,
+            TEST_NONCE.to_vec(),
+            FLAGS_NONE,
+        )
+        .expect("test encrypted header should be valid");
+        let payload_ciphertext = encrypt_aead(
+            &TEST_ROOT_KEY,
+            &TEST_NONCE,
+            TEST_PLAINTEXT_PAYLOAD,
+            &canonical_payload_aad(&header).expect("test payload AAD should encode"),
+        )
+        .expect("test payload should encrypt");
+
+        CvfEnvelope::new(header, payload_ciphertext)
+            .expect("test encrypted envelope should be valid")
+            .encode()
+            .expect("test encrypted envelope should encode")
     }
 
     fn write_u16(bytes: &mut [u8], offset: usize, value: u16) {
@@ -1145,6 +1236,44 @@ mod tests {
     }
 
     #[test]
+    fn deterministic_test_envelope_is_stable_for_fixed_materials() {
+        let first = deterministic_encrypted_test_envelope_bytes();
+        let second = deterministic_encrypted_test_envelope_bytes();
+
+        assert_eq!(first, second);
+        assert_eq!(&first[..MAGIC_LEN], MAGIC_BYTES);
+        assert_eq!(
+            u16::from_be_bytes([
+                first[FORMAT_VERSION_OFFSET],
+                first[FORMAT_VERSION_OFFSET + 1],
+            ]),
+            FORMAT_VERSION
+        );
+        assert_eq!(
+            u32::from_be_bytes([
+                first[HEADER_LENGTH_OFFSET],
+                first[HEADER_LENGTH_OFFSET + 1],
+                first[HEADER_LENGTH_OFFSET + 2],
+                first[HEADER_LENGTH_OFFSET + 3],
+            ]),
+            HEADER_BODY_LEN as u32
+        );
+
+        let envelope = parse_envelope(&first).expect("deterministic test envelope should parse");
+        assert_eq!(envelope.header().kdf_salt(), TEST_SALT);
+        assert_eq!(
+            envelope.header().root_key_wrap_nonce(),
+            TEST_ROOT_KEY_WRAP_NONCE
+        );
+        assert_eq!(envelope.header().payload_nonce(), TEST_NONCE);
+        assert_eq!(
+            decrypt_envelope_with_policy(TEST_PASSPHRASE, &first, &test_kdf_policy())
+                .expect("deterministic test envelope should decrypt"),
+            TEST_PLAINTEXT_PAYLOAD
+        );
+    }
+
+    #[test]
     fn decrypt_rejects_wrong_passphrase() {
         let encrypted = encrypted_test_envelope_bytes();
 
@@ -1152,6 +1281,32 @@ mod tests {
             decrypt_envelope_with_policy(WRONG_TEST_PASSPHRASE, &encrypted, &test_kdf_policy()),
             Err(CairnError::AuthenticationFailed)
         );
+    }
+
+    #[test]
+    fn public_authentication_errors_do_not_distinguish_wrong_passphrase_from_tampered_ciphertext() {
+        let encrypted = encrypted_test_envelope_bytes();
+        let mut modified_payload = encrypted.clone();
+        modified_payload[PREFIX_LEN + HEADER_BODY_LEN] ^= 0x01;
+        let mut modified_tag = encrypted.clone();
+        let last = modified_tag.len() - 1;
+        modified_tag[last] ^= 0x01;
+        let mut modified_wrapped_root_key = encrypted.clone();
+        modified_wrapped_root_key[PREFIX_LEN + BODY_WRAPPED_ROOT_KEY_OFFSET] ^= 0x01;
+
+        let cases = [
+            (WRONG_TEST_PASSPHRASE, encrypted.as_slice()),
+            (TEST_PASSPHRASE, modified_payload.as_slice()),
+            (TEST_PASSPHRASE, modified_tag.as_slice()),
+            (TEST_PASSPHRASE, modified_wrapped_root_key.as_slice()),
+        ];
+
+        for (passphrase, bytes) in cases {
+            assert_eq!(
+                decrypt_envelope_with_policy(passphrase, bytes, &test_kdf_policy()),
+                Err(CairnError::AuthenticationFailed)
+            );
+        }
     }
 
     #[test]
@@ -1291,6 +1446,125 @@ mod tests {
     }
 
     #[test]
+    fn reject_argon2_output_length_not_32() {
+        let parameters = Argon2idParameters::new(
+            test_kdf_parameters().memory_cost_kib(),
+            test_kdf_parameters().time_cost(),
+            test_kdf_parameters().parallelism(),
+            DERIVED_KEY_LEN as u32 - 1,
+        );
+
+        assert_eq!(
+            test_kdf_policy().validate(&parameters),
+            Err(CairnError::InvalidKdfParameters(
+                "Argon2id output length does not match policy"
+            ))
+        );
+    }
+
+    #[test]
+    fn reject_argon2_memory_below_minimum() {
+        let parameters = Argon2idParameters::new(
+            test_kdf_parameters().memory_cost_kib() - 1,
+            test_kdf_parameters().time_cost(),
+            test_kdf_parameters().parallelism(),
+            DERIVED_KEY_LEN as u32,
+        );
+
+        assert_eq!(
+            test_kdf_policy().validate(&parameters),
+            Err(CairnError::InvalidKdfParameters(
+                "Argon2id memory cost is below policy"
+            ))
+        );
+    }
+
+    #[test]
+    fn reject_argon2_memory_above_maximum_before_derivation() {
+        let parameters = Argon2idParameters::new(
+            u32::MAX,
+            test_kdf_parameters().time_cost(),
+            test_kdf_parameters().parallelism(),
+            DERIVED_KEY_LEN as u32,
+        );
+
+        assert_eq!(
+            derive_key(TEST_PASSPHRASE, &parameters, &[], &test_kdf_policy()),
+            Err(CairnError::InvalidKdfParameters(
+                "Argon2id memory cost is above policy"
+            ))
+        );
+    }
+
+    #[test]
+    fn reject_argon2_time_below_minimum() {
+        let parameters = Argon2idParameters::new(
+            test_kdf_parameters().memory_cost_kib(),
+            test_kdf_parameters().time_cost() - 1,
+            test_kdf_parameters().parallelism(),
+            DERIVED_KEY_LEN as u32,
+        );
+
+        assert_eq!(
+            test_kdf_policy().validate(&parameters),
+            Err(CairnError::InvalidKdfParameters(
+                "Argon2id time cost is below policy"
+            ))
+        );
+    }
+
+    #[test]
+    fn reject_argon2_time_above_maximum_before_derivation() {
+        let parameters = Argon2idParameters::new(
+            test_kdf_parameters().memory_cost_kib(),
+            u32::MAX,
+            test_kdf_parameters().parallelism(),
+            DERIVED_KEY_LEN as u32,
+        );
+
+        assert_eq!(
+            derive_key(TEST_PASSPHRASE, &parameters, &[], &test_kdf_policy()),
+            Err(CairnError::InvalidKdfParameters(
+                "Argon2id time cost is above policy"
+            ))
+        );
+    }
+
+    #[test]
+    fn reject_argon2_parallelism_below_minimum() {
+        let parameters = Argon2idParameters::new(
+            test_kdf_parameters().memory_cost_kib(),
+            test_kdf_parameters().time_cost(),
+            test_kdf_parameters().parallelism() - 1,
+            DERIVED_KEY_LEN as u32,
+        );
+
+        assert_eq!(
+            test_kdf_policy().validate(&parameters),
+            Err(CairnError::InvalidKdfParameters(
+                "Argon2id parallelism is below policy"
+            ))
+        );
+    }
+
+    #[test]
+    fn reject_argon2_parallelism_above_maximum_before_derivation() {
+        let parameters = Argon2idParameters::new(
+            test_kdf_parameters().memory_cost_kib(),
+            test_kdf_parameters().time_cost(),
+            u32::MAX,
+            DERIVED_KEY_LEN as u32,
+        );
+
+        assert_eq!(
+            derive_key(TEST_PASSPHRASE, &parameters, &[], &test_kdf_policy()),
+            Err(CairnError::InvalidKdfParameters(
+                "Argon2id parallelism is above policy"
+            ))
+        );
+    }
+
+    #[test]
     fn encryption_uses_distinct_random_salt_and_nonces() {
         let encrypted = encrypted_test_envelope_bytes();
         let envelope = parse_envelope(&encrypted).expect("encrypted envelope should parse");
@@ -1334,6 +1608,20 @@ mod tests {
         bytes[0] ^= 0xff;
 
         assert_eq!(parse_envelope(&bytes), Err(CairnError::InvalidMagic));
+    }
+
+    #[test]
+    fn reject_unsupported_format_version() {
+        let mut bytes = valid_envelope_bytes();
+        write_u16(&mut bytes, FORMAT_VERSION_OFFSET, FORMAT_VERSION + 1);
+
+        assert_eq!(
+            parse_envelope(&bytes),
+            Err(CairnError::UnsupportedFormatVersion {
+                found: FORMAT_VERSION + 1,
+                supported: FORMAT_VERSION,
+            })
+        );
     }
 
     #[test]
@@ -1404,6 +1692,17 @@ mod tests {
     }
 
     #[test]
+    fn reject_nonzero_flags() {
+        let mut bytes = valid_envelope_bytes();
+        write_u32(&mut bytes, PREFIX_LEN + BODY_FLAGS_OFFSET, 1);
+
+        assert_eq!(
+            parse_envelope(&bytes),
+            Err(CairnError::MalformedHeader("unsupported CVF-1 flags"))
+        );
+    }
+
+    #[test]
     fn reject_invalid_salt_length() {
         let mut bytes = valid_envelope_bytes();
         write_u16(
@@ -1470,6 +1769,47 @@ mod tests {
     }
 
     #[test]
+    fn reject_header_length_not_exact_for_cvf1() {
+        let mut too_short = valid_envelope_bytes();
+        write_u32(
+            &mut too_short,
+            HEADER_LENGTH_OFFSET,
+            (HEADER_BODY_LEN - 1) as u32,
+        );
+        assert_eq!(
+            parse_envelope(&too_short),
+            Err(CairnError::InvalidLength { field: "header" })
+        );
+
+        let mut too_long = valid_envelope_bytes();
+        write_u32(
+            &mut too_long,
+            HEADER_LENGTH_OFFSET,
+            (HEADER_BODY_LEN + 1) as u32,
+        );
+        assert_eq!(
+            parse_envelope(&too_long),
+            Err(CairnError::InvalidLength { field: "header" })
+        );
+    }
+
+    #[test]
+    fn reject_extra_header_bytes_if_not_allowed() {
+        let mut bytes = valid_envelope_bytes();
+        bytes.insert(PREFIX_LEN + HEADER_BODY_LEN, 0);
+        write_u32(
+            &mut bytes,
+            HEADER_LENGTH_OFFSET,
+            (HEADER_BODY_LEN + 1) as u32,
+        );
+
+        assert_eq!(
+            parse_envelope(&bytes),
+            Err(CairnError::InvalidLength { field: "header" })
+        );
+    }
+
+    #[test]
     fn reject_header_length_too_large_or_inconsistent() {
         let mut too_large = valid_envelope_bytes();
         write_u32(
@@ -1490,9 +1830,7 @@ mod tests {
         );
         assert_eq!(
             parse_envelope(&inconsistent),
-            Err(CairnError::MalformedHeader(
-                "header length does not match CVF-1 fields"
-            ))
+            Err(CairnError::InvalidLength { field: "header" })
         );
     }
 
@@ -1507,6 +1845,180 @@ mod tests {
                 "payload ciphertext is required"
             ))
         );
+    }
+
+    #[test]
+    fn malformed_inputs_do_not_panic() {
+        let mut invalid_format = valid_envelope_bytes();
+        write_u16(
+            &mut invalid_format,
+            FORMAT_VERSION_OFFSET,
+            FORMAT_VERSION + 1,
+        );
+        let mut short_header_len = valid_envelope_bytes();
+        write_u32(
+            &mut short_header_len,
+            HEADER_LENGTH_OFFSET,
+            (HEADER_BODY_LEN - 1) as u32,
+        );
+        let mut oversized_header_len = valid_envelope_bytes();
+        write_u32(&mut oversized_header_len, HEADER_LENGTH_OFFSET, u32::MAX);
+        let mut nonzero_flags = valid_envelope_bytes();
+        write_u32(&mut nonzero_flags, PREFIX_LEN + BODY_FLAGS_OFFSET, 1);
+
+        let cases: &[&[u8]] = &[
+            &[],
+            &MAGIC_BYTES[..MAGIC_LEN - 1],
+            &valid_envelope_bytes()[..PREFIX_LEN - 1],
+            &invalid_format,
+            &short_header_len,
+            &oversized_header_len,
+            &nonzero_flags,
+        ];
+
+        for input in cases {
+            let result = std::panic::catch_unwind(|| parse_envelope(input));
+            assert!(result.is_ok());
+        }
+    }
+
+    #[test]
+    fn aad_changes_when_any_authenticated_header_field_changes() {
+        let original = valid_header();
+        let original_aad =
+            canonical_payload_aad(&original).expect("original payload AAD should encode");
+        let cases = [
+            CvfHeader::new(
+                Argon2idParameters::new(
+                    original.kdf_parameters().memory_cost_kib() + 1,
+                    original.kdf_parameters().time_cost(),
+                    original.kdf_parameters().parallelism(),
+                    original.kdf_parameters().output_len(),
+                ),
+                TEST_SALT.to_vec(),
+                TEST_ROOT_KEY_WRAP_NONCE.to_vec(),
+                TEST_WRAPPED_ROOT_KEY.to_vec(),
+                TEST_NONCE.to_vec(),
+                FLAGS_NONE,
+            )
+            .expect("changed memory cost header should encode"),
+            CvfHeader::new(
+                original.kdf_parameters().clone(),
+                {
+                    let mut salt = TEST_SALT.to_vec();
+                    salt[0] ^= 0x01;
+                    salt
+                },
+                TEST_ROOT_KEY_WRAP_NONCE.to_vec(),
+                TEST_WRAPPED_ROOT_KEY.to_vec(),
+                TEST_NONCE.to_vec(),
+                FLAGS_NONE,
+            )
+            .expect("changed salt header should encode"),
+            CvfHeader::new(
+                original.kdf_parameters().clone(),
+                TEST_SALT.to_vec(),
+                {
+                    let mut nonce = TEST_ROOT_KEY_WRAP_NONCE.to_vec();
+                    nonce[0] ^= 0x01;
+                    nonce
+                },
+                TEST_WRAPPED_ROOT_KEY.to_vec(),
+                TEST_NONCE.to_vec(),
+                FLAGS_NONE,
+            )
+            .expect("changed wrap nonce header should encode"),
+            CvfHeader::new(
+                original.kdf_parameters().clone(),
+                TEST_SALT.to_vec(),
+                TEST_ROOT_KEY_WRAP_NONCE.to_vec(),
+                {
+                    let mut wrapped_key = TEST_WRAPPED_ROOT_KEY.to_vec();
+                    wrapped_key[0] ^= 0x01;
+                    wrapped_key
+                },
+                TEST_NONCE.to_vec(),
+                FLAGS_NONE,
+            )
+            .expect("changed wrapped key header should encode"),
+            CvfHeader::new(
+                original.kdf_parameters().clone(),
+                TEST_SALT.to_vec(),
+                TEST_ROOT_KEY_WRAP_NONCE.to_vec(),
+                TEST_WRAPPED_ROOT_KEY.to_vec(),
+                {
+                    let mut nonce = TEST_NONCE.to_vec();
+                    nonce[0] ^= 0x01;
+                    nonce
+                },
+                FLAGS_NONE,
+            )
+            .expect("changed payload nonce header should encode"),
+        ];
+
+        for changed_header in cases {
+            assert_ne!(
+                canonical_payload_aad(&changed_header).expect("changed payload AAD should encode"),
+                original_aad
+            );
+        }
+    }
+
+    #[test]
+    fn root_key_wrap_aad_changes_when_kdf_or_wrap_metadata_changes() {
+        let original = valid_header();
+        let original_aad =
+            canonical_root_key_wrap_aad(&original).expect("original wrap AAD should encode");
+        let cases = [
+            CvfHeader::new(
+                Argon2idParameters::new(
+                    original.kdf_parameters().memory_cost_kib() + 1,
+                    original.kdf_parameters().time_cost(),
+                    original.kdf_parameters().parallelism(),
+                    original.kdf_parameters().output_len(),
+                ),
+                TEST_SALT.to_vec(),
+                TEST_ROOT_KEY_WRAP_NONCE.to_vec(),
+                TEST_WRAPPED_ROOT_KEY.to_vec(),
+                TEST_NONCE.to_vec(),
+                FLAGS_NONE,
+            )
+            .expect("changed memory cost header should encode"),
+            CvfHeader::new(
+                original.kdf_parameters().clone(),
+                {
+                    let mut salt = TEST_SALT.to_vec();
+                    salt[0] ^= 0x01;
+                    salt
+                },
+                TEST_ROOT_KEY_WRAP_NONCE.to_vec(),
+                TEST_WRAPPED_ROOT_KEY.to_vec(),
+                TEST_NONCE.to_vec(),
+                FLAGS_NONE,
+            )
+            .expect("changed salt header should encode"),
+            CvfHeader::new(
+                original.kdf_parameters().clone(),
+                TEST_SALT.to_vec(),
+                {
+                    let mut nonce = TEST_ROOT_KEY_WRAP_NONCE.to_vec();
+                    nonce[0] ^= 0x01;
+                    nonce
+                },
+                TEST_WRAPPED_ROOT_KEY.to_vec(),
+                TEST_NONCE.to_vec(),
+                FLAGS_NONE,
+            )
+            .expect("changed wrap nonce header should encode"),
+        ];
+
+        for changed_header in cases {
+            assert_ne!(
+                canonical_root_key_wrap_aad(&changed_header)
+                    .expect("changed wrap AAD should encode"),
+                original_aad
+            );
+        }
     }
 
     #[test]

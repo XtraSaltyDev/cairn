@@ -36,6 +36,12 @@ payload with XChaCha20-Poly1305 under the root key. The header stores explicit
 suite IDs, KDF parameters, KDF salt, a distinct root-key wrap nonce, wrapped root
 key bytes, and a distinct payload nonce.
 
+The current pre-release KDF policy enforces both minimum and maximum Argon2id
+bounds before derivation: output length 32, memory cost 194,560-262,144 KiB,
+time cost 2-4, and parallelism 1-4. Non-zero flags, non-exact header length,
+and non-exact variable lengths are rejected in CVF-1 unless a future ADR defines
+an extension.
+
 Payload encryption authenticates the canonical encoded prefix and full header as
 AAD. Root-key wrapping authenticates the stable wrapping metadata as AAD: magic
 bytes, format version, schema version, suite IDs, flags, KDF parameters, salt,

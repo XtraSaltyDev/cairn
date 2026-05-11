@@ -63,7 +63,7 @@ This is a practical MVP threat model for Cairn. It is not a claim that the vault
 - The full cleartext header is authenticated as payload AEAD associated data.
 - Root-key wrapping metadata is authenticated as wrapping AEAD associated data.
 - Wrong passwords and tampering fail closed.
-- KDF parameters are explicit and policy-checked.
+- KDF parameters are explicit and policy-checked with minimum and maximum bounds before derivation.
 - The root vault key is random, not derived directly from the password.
 - The passphrase-derived key-encryption key wraps the root vault key; the root
   vault key encrypts opaque payload bytes.

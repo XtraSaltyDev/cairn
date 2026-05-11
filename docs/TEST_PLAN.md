@@ -11,15 +11,24 @@ Format parser tests must verify magic bytes, schema version handling, explicit c
 Implemented CVF-1 parser tests currently cover:
 
 - Round-trip deterministic envelope encode/decode.
+- Deterministic test-only encrypted envelope encoding for fixed fake materials.
 - Bad magic bytes.
 - Truncated prefix bytes.
 - Truncated variable header bytes.
+- Unsupported format version.
 - Unsupported schema version.
 - Unsupported crypto suite ID.
 - Unsupported KDF suite ID.
+- Non-zero flags.
+- Argon2id output length other than 32.
+- Argon2id memory, time, and parallelism values below minimum policy.
+- Argon2id memory, time, and parallelism values above maximum policy before derivation.
 - Invalid salt, root-key wrap nonce, wrapped root key, and payload nonce lengths.
-- Header length values that are too large or inconsistent with the parsed body.
+- Header length values that are too large, shortened, extended, or inconsistent with CVF-1's exact header length.
 - Rejection of empty payload ciphertext.
+- Malformed inputs do not panic.
+- Payload AAD changes when authenticated header fields change.
+- Root-key wrap AAD changes when KDF or wrap metadata changes.
 - Debug output that reports lengths instead of wrapped-key or payload bytes.
 
 ## Tamper Tests
@@ -35,7 +44,9 @@ modified root-key wrap nonce, modified wrapped root key, unsupported suites, and
 weak KDF parameters under the default policy.
 
 Tests use an explicit test-only KDF policy for fast round trips. Production
-defaults are not weakened silently to make tests pass.
+defaults are not weakened silently to make tests pass. Production policy also
+sets maximum KDF bounds so excessive Argon2id parameters fail before expensive
+derivation.
 
 ## Negative Tests
 
