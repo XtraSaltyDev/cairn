@@ -13,3 +13,9 @@ These invariants are non-negotiable engineering rules for Cairn.
 - Recovery does not imply backdoor.
 - Any new external surface needs threat model update.
 
+## CVF-1 Parser Invariants
+
+- CVF-1 integers are explicit big-endian values, not library-default serialization.
+- Unknown schema versions, crypto suite IDs, KDF suite IDs, and non-zero flags fail closed.
+- CVF-1 salt, wrapped root key placeholder, and payload nonce lengths are fixed and validated.
+- The parser accepts only an opaque, non-empty ciphertext payload; item storage and unlock flows are not implemented yet.

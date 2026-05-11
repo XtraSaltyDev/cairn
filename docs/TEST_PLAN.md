@@ -8,9 +8,29 @@ Unit tests cover constants, non-secret model behavior, explicit schema values, e
 
 Format parser tests must verify magic bytes, schema version handling, explicit crypto/KDF suite IDs, KDF parameter policy checks, header length checks, and fail-closed parse behavior.
 
+Implemented CVF-1 parser tests currently cover:
+
+- Round-trip deterministic envelope encode/decode.
+- Bad magic bytes.
+- Truncated prefix bytes.
+- Truncated variable header bytes.
+- Unsupported schema version.
+- Unsupported crypto suite ID.
+- Unsupported KDF suite ID.
+- Invalid salt, wrapped root key, and payload nonce lengths.
+- Header length values that are too large or inconsistent with the parsed body.
+- Rejection of empty payload ciphertext.
+- Debug output that reports lengths instead of wrapped-key or payload bytes.
+
 ## Tamper Tests
 
 Tamper tests must cover modified header fields, modified ciphertext, changed KDF parameters, swapped nonce, corrupt wrapped key, and authenticated-data failures.
+
+The current tamper-test foundation mutates every byte in a valid in-memory
+header body and asserts that parsing either fails validation or produces a
+different parsed header. AEAD ciphertext, swapped nonce, wrong password, and
+header-as-AAD authentication tests remain future work because full encryption and
+unlock are not implemented yet.
 
 ## Negative Tests
 
@@ -44,4 +64,3 @@ Atomic write tests should verify temporary-file behavior, fsync strategy where p
 - `README.md` is accurate.
 - `AGENTS.md` is strict.
 - No production-ready security claims.
-

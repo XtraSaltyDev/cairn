@@ -10,7 +10,7 @@ pub const CLI_COMMAND: &str = "cairn";
 mod tests {
     use crate::model::{VaultId, VaultMetadata};
     use crate::vault_format::{
-        CRYPTO_SUITE_ID_DESIGN_DRAFT, FILE_EXTENSION, KDF_SUITE_ID_DESIGN_DRAFT, MAGIC_BYTES,
+        CRYPTO_SUITE_XCHACHA20_POLY1305, FILE_EXTENSION, KDF_SUITE_ARGON2ID, MAGIC_BYTES,
         SCHEMA_VERSION,
     };
 
@@ -19,11 +19,8 @@ mod tests {
         assert_eq!(MAGIC_BYTES, *b"CAIRN\0CVF1");
         assert_eq!(SCHEMA_VERSION, 1);
         assert_eq!(FILE_EXTENSION, "cairn");
-        assert_eq!(
-            CRYPTO_SUITE_ID_DESIGN_DRAFT,
-            "xchacha20poly1305-design-draft"
-        );
-        assert_eq!(KDF_SUITE_ID_DESIGN_DRAFT, "argon2id-design-draft");
+        assert_eq!(CRYPTO_SUITE_XCHACHA20_POLY1305, 1);
+        assert_eq!(KDF_SUITE_ARGON2ID, 1);
     }
 
     #[test]

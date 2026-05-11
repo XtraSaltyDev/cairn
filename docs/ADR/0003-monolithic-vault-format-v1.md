@@ -25,3 +25,7 @@ Use a monolithic encrypted snapshot format for CVF-1.
 
 Future append-only or per-record format is deferred until sync or sharing exists.
 
+The current CVF-1 implementation uses a fixed magic/version/length prefix, a
+strict cleartext header containing only non-sensitive parse/decrypt metadata, and
+an opaque non-empty ciphertext payload. Header parsing and validation are
+implemented before full encryption or unlock flows.

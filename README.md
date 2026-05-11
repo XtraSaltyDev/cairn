@@ -22,7 +22,7 @@ The MVP direction is a Rust core, a CLI-first workflow, and a monolithic encrypt
 ```text
 cairn/
   crates/
-    cairn-core/  security-sensitive core types and vault format scaffolding
+    cairn-core/  security-sensitive core types and CVF-1 envelope parsing
     cairn-cli/   thin CLI command surface
   docs/          product, security, format, recovery, test, roadmap, and ADR docs
 ```
@@ -44,4 +44,3 @@ cargo run -p cairn-cli -- --help
 - Keep `cairn-cli` thin.
 - Fail closed on wrong passwords, tampering, corruption, unsupported schemas, and malformed imports.
 - Recovery must not imply a backdoor or account reset.
-
