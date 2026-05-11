@@ -1,0 +1,16 @@
+[package]
+name = "cairn-cli"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "CLI scaffold for the Cairn local-first password vault."
+
+[[bin]]
+name = "cairn"
+path = "src/main.rs"
+
+[dependencies]
+cairn-core = { path = "../cairn-core" }
+clap = { version = "4.5.4", features = ["derive"] }
+

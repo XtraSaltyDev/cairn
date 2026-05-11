@@ -1,0 +1,11 @@
+[package]
+name = "cairn-core"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Core types and vault format scaffolding for Cairn."
+
+[lib]
+path = "src/lib.rs"
+
