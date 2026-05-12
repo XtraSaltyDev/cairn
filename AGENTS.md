@@ -6,12 +6,65 @@ Cairn is an early-stage local-first password vault project. The MVP direction is
 
 This project handles password vault design. Favor correctness, clear security boundaries, small reviewable changes, and negative tests over visible feature progress.
 
+## Repo Workflow Gate
+
+- Base branch: resolve from `origin/HEAD` when an `origin` remote exists; otherwise use repo context and call out that no `origin` remote is configured.
+- Before making code edits, inspect the checkout state with `git status --short --branch` and `git branch --show-current`. Run `git fetch origin` only when an `origin` remote exists.
+- For nontrivial work, do not edit directly on the remote default branch. Use a feature branch or an isolated worktree from the resolved base branch first.
+- Nontrivial work includes broad features, risky changes, exploratory passes, multi-pass implementation, cryptographic or vault-format changes, or changes expected to touch multiple files.
+- If the checkout is dirty, do not overwrite or reset existing changes. If the dirty state is unrelated, prefer a separate worktree from the resolved base branch. If it overlaps the task and the safe path is unclear, stop and ask.
+- Do not stage, commit, push, open PRs, merge, publish, or tag releases unless the user explicitly asks.
+- Before the final response, check `git status --short` and call out any untracked files that remain.
+
+## Goal Prompt Contract
+
+Fresh-thread `/goal` prompts for Cairn should include:
+
+- Current repo state: path, current branch, dirty/clean status, resolved base/default branch, whether `origin` exists, and whether the task should use a feature branch or worktree.
+- Scope fence: the exact `cairn-core`, `cairn-cli`, vault-format, docs, ADR, or test surface allowed to change.
+- Out of scope: sync, autofill, browser extension, passkeys, mobile, sharing, desktop UI, production-readiness claims, publishing, releases, and custom cryptography unless explicitly requested with an ADR/design change.
+- Success criteria: the precise format, parser, validation, CLI output, error handling, negative test, or documentation state that proves the task is done.
+- Verification: `cargo fmt`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace`, `cargo run -p cairn-cli -- --help`, and `git diff --check` when relevant.
+- Cleanup and final report: no temp files, secret-bearing fixtures, debug traces, or unreported untracked files; changed files, checks run, security boundaries, and known gaps must be listed.
+
+## State Reporting
+
+- Keep repo state separate from runtime/command state in final reports.
+- Repo state includes branch, commit, PR, tracked diff, untracked files, docs/ADR changes, and tests run.
+- Runtime/command state includes CLI output, exit code, sample vault-format behavior, generated test data, and any local files produced by commands.
+- Do not blur passing Rust checks with security claims. State which threat, parser, format, or secret-handling behavior was actually verified.
+
 ## Repo Layout
 
 - `crates/cairn-core/`: security-sensitive core types, vault format logic, parsing, encryption, key handling, and invariants.
 - `crates/cairn-cli/`: thin command-line interface. It may parse commands and display user-facing messages, but it must not own crypto logic.
 - `docs/`: product, security, recovery, format, test, roadmap, and ADR documentation.
 - `.github/workflows/ci.yml`: formatting, linting, and test checks.
+
+## How To Run This Project
+
+Run locally:
+
+```bash
+cargo run -p cairn-cli -- --help
+```
+
+There is no server process for the current MVP. Cairn is a local CLI/core project.
+
+Format, lint, and test:
+
+```bash
+cargo fmt
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace
+cargo run -p cairn-cli -- --help
+git diff --check
+```
+
+Deploy or release:
+
+- Do not publish crates, create tags, cut releases, or distribute binaries unless the user explicitly asks.
+- There is no production deploy path for the current MVP.
 
 ## Build And Test Commands
 
