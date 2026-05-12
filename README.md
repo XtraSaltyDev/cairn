@@ -8,10 +8,11 @@ Cairn is an early-stage local-first password vault project. It is not production
 The MVP direction is a Rust core, a CLI-first workflow, and a monolithic encrypted vault file. The desktop UI is deferred until the core vault format, recovery model, and negative test suite have stabilized.
 
 Current code is still a pre-release Milestone 0 scaffold: `cairn-core`
-has a tested CVF-1 encrypted envelope plus a versioned plaintext vault
-snapshot model for the encrypted payload, and `cairn-cli` exposes placeholder
-help/commands only. File I/O, recovery kit generation, real vault commands,
-import/export, and production use remain deferred.
+has a tested CVF-1 encrypted envelope, a versioned plaintext vault snapshot
+model for the encrypted payload, and a core-only API that composes the two.
+`cairn-cli` exposes placeholder help/commands only. File I/O, recovery kit
+generation, real vault commands, import/export, and production use remain
+deferred.
 
 ## MVP Non-Goals
 

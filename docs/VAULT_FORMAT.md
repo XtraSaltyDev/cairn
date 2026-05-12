@@ -13,10 +13,10 @@ CVF-1 means Cairn Vault Format version 1.
 
 The current implementation covers deterministic test-only CVF-1 envelope
 encoding, strict header parsing, payload encryption/decryption, a versioned
-plaintext `VaultSnapshot` schema for decrypted payload bytes, and
-malformed-input rejection. Unlock sessions, recovery kit generation,
-import/export, CLI vault commands, production use, and write-path behavior
-remain future work.
+plaintext `VaultSnapshot` schema for decrypted payload bytes, a core-only
+encrypted snapshot boundary that composes those pieces, and malformed-input
+rejection. Unlock sessions, recovery kit generation, import/export, CLI vault
+commands, production use, and write-path behavior remain future work.
 
 ## Binary Layout
 
@@ -131,6 +131,14 @@ unknown item kinds, duplicate item IDs, missing required identifiers/titles,
 empty login/password primary secrets, and updated timestamps earlier than
 created timestamps. Serialization validates the snapshot before returning
 plaintext payload bytes.
+
+The core encrypted snapshot boundary is intentionally narrow:
+`create_encrypted_snapshot(passphrase, snapshot)` validates and JSON-encodes the
+`VaultSnapshot` before producing CVF-1 envelope bytes, and
+`decrypt_snapshot(passphrase, envelope_bytes)` decrypts CVF-1 envelope bytes
+before decoding and validating the snapshot. This boundary does not perform
+file I/O, atomic writes, recovery kit behavior, import/export, or CLI command
+handling.
 
 ## Crypto Direction
 
