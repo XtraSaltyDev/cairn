@@ -31,6 +31,29 @@ Implemented CVF-1 parser tests currently cover:
 - Root-key wrap AAD changes when KDF or wrap metadata changes.
 - Debug output that reports lengths instead of wrapped-key or payload bytes.
 
+## Snapshot Payload Tests
+
+Snapshot payload tests cover the plaintext schema that lives inside the
+encrypted CVF-1 payload. Implemented tests currently cover:
+
+- JSON round-trip preservation for non-secret snapshot and item fields.
+- Secret value preservation after decode.
+- `Debug` redaction for secret values, items, and snapshots.
+- Unsupported snapshot schema version rejection.
+- Empty vault ID rejection.
+- Empty item ID rejection.
+- Duplicate item ID rejection.
+- Empty item title rejection.
+- Empty login/password primary secret rejection.
+- Item `updated_at` earlier than `created_at` rejection.
+- Snapshot `updated_at` earlier than `created_at` rejection.
+- Malformed JSON rejection.
+- Unknown item kind rejection.
+- Encode-time validation before plaintext payload bytes are returned.
+- Decode-time validation after JSON parsing.
+- End-to-end in-memory flow from snapshot JSON payload bytes through CVF-1
+  encryption, decryption, and snapshot decode.
+
 ## Tamper Tests
 
 Tamper tests must cover modified header fields, modified ciphertext, changed KDF parameters, swapped nonce, corrupt wrapped key, and authenticated-data failures.
