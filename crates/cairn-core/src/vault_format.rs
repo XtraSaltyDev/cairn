@@ -771,6 +771,27 @@ pub fn decrypt_envelope(passphrase: &[u8], envelope_bytes: &[u8]) -> Result<Vec<
     decrypt_envelope_with_policy(passphrase, envelope_bytes, &KdfPolicy::cvf1_default())
 }
 
+#[cfg(test)]
+pub(crate) fn create_encrypted_envelope_for_tests(
+    passphrase: &[u8],
+    plaintext_payload: &[u8],
+) -> Result<Vec<u8>, CairnError> {
+    create_encrypted_envelope_with_policy(
+        passphrase,
+        plaintext_payload,
+        Argon2idParameters::test_only_fast(),
+        &KdfPolicy::test_only_fast(),
+    )
+}
+
+#[cfg(test)]
+pub(crate) fn decrypt_envelope_for_tests(
+    passphrase: &[u8],
+    envelope_bytes: &[u8],
+) -> Result<Vec<u8>, CairnError> {
+    decrypt_envelope_with_policy(passphrase, envelope_bytes, &KdfPolicy::test_only_fast())
+}
+
 fn decrypt_envelope_with_policy(
     passphrase: &[u8],
     envelope_bytes: &[u8],

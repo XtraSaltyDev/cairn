@@ -11,6 +11,7 @@ This is a practical MVP threat model for Cairn. It is not a claim that the vault
 - Root-key wrap nonce.
 - Payload nonce.
 - Vault payload.
+- Plaintext vault snapshot while unlocked in memory.
 - Recovery kit.
 - Encrypted export.
 - Item secrets.
@@ -66,11 +67,13 @@ This is a practical MVP threat model for Cairn. It is not a claim that the vault
 - KDF parameters are explicit and policy-checked with minimum and maximum bounds before derivation.
 - The root vault key is random, not derived directly from the password.
 - The passphrase-derived key-encryption key wraps the root vault key; the root
-  vault key encrypts opaque payload bytes.
+  vault key encrypts the full versioned plaintext `VaultSnapshot` payload.
 - The KDF salt, root-key wrap nonce, and payload nonce are separate values and
   must not be reused for each other.
 - Crypto suite IDs are explicit.
 - Plaintext item metadata is not stored outside the encrypted payload in v1 unless an ADR approves it.
+- Snapshot secret values must not appear in debug output, logs, or user-facing
+  command output.
 - CLI and UI code must not own cryptographic logic.
 - Recovery does not imply a backdoor.
 - Any new external surface requires a threat model update.

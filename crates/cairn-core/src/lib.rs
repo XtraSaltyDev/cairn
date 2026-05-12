@@ -1,5 +1,6 @@
 pub mod error;
 pub mod model;
+pub mod snapshot;
 pub mod vault_format;
 
 pub const PRODUCT_NAME: &str = "Cairn";

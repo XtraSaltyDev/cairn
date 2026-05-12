@@ -14,6 +14,10 @@ These invariants are non-negotiable engineering rules for Cairn.
   must not be reused for each other.
 - Crypto suite IDs are explicit.
 - No plaintext item metadata outside the encrypted payload in v1 unless explicitly approved by ADR.
+- The CVF-1 encrypted payload contains the entire versioned plaintext
+  `VaultSnapshot`; snapshot bytes are in-memory only and are not stored outside
+  the encrypted envelope.
+- Snapshot secret values must not appear in `Debug` output.
 - CLI/UI must not own crypto logic.
 - Recovery does not imply backdoor.
 - Any new external surface needs threat model update.
@@ -24,6 +28,8 @@ These invariants are non-negotiable engineering rules for Cairn.
 - Unknown format versions, schema versions, crypto suite IDs, KDF suite IDs, and non-zero flags fail closed.
 - CVF-1 salt, root-key wrap nonce, wrapped root key, and payload nonce lengths are fixed and validated.
 - CVF-1 header length is exactly 146 bytes; shortened headers, extra header bytes, and non-exact variable lengths fail closed.
-- The parser accepts only an opaque, non-empty ciphertext payload; item storage and unlock-session flows are not implemented yet.
+- The parser accepts only a non-empty ciphertext payload. After decryption,
+  snapshot decoding validates the plaintext `VaultSnapshot`; unlock-session
+  flows are not implemented yet.
 - The decrypt path rejects weak or excessive KDF parameters under the default policy before deriving keys.
 - Debug output reports lengths for secret-bearing fields rather than bytes.

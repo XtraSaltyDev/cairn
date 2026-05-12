@@ -12,10 +12,11 @@ CVF-1 means Cairn Vault Format version 1.
 - Payload: encrypted vault snapshot
 
 The current implementation covers deterministic test-only CVF-1 envelope
-encoding, strict header parsing, opaque payload encryption/decryption, and
-malformed-input rejection. Item storage, unlock sessions, recovery kit
-generation, import/export, CLI vault commands, production use, and write-path
-behavior remain future work.
+encoding, strict header parsing, payload encryption/decryption, a versioned
+plaintext `VaultSnapshot` schema for decrypted payload bytes, and
+malformed-input rejection. Unlock sessions, recovery kit generation,
+import/export, CLI vault commands, production use, and write-path behavior
+remain future work.
 
 ## Binary Layout
 
@@ -31,9 +32,10 @@ offset  size  field
 16+N    ...   payload ciphertext bytes
 ```
 
-The payload ciphertext is opaque to the parser in this milestone, but it must be
-present and non-empty. There is no plaintext item database or item metadata
-outside the encrypted payload.
+The payload ciphertext must be present and non-empty. After successful
+decryption, the plaintext payload is a JSON-encoded `VaultSnapshot` schema
+version 1. There is no plaintext item database or item metadata outside the
+encrypted payload.
 
 The CVF-1 header body currently has a fixed length of 146 bytes:
 
@@ -92,13 +94,43 @@ parallelism 1-4. Values below minimum or above maximum are rejected before
 Argon2id derivation. Current parameters are pre-release and require final
 tuning/calibration before production use.
 
-## Payload
+## Payload Snapshot
 
-The payload is encrypted opaque bytes. The implementation does not define item
-records or plaintext metadata yet. Payload ciphertext is produced with
+The payload is encrypted as a whole. Payload ciphertext is produced with
 XChaCha20-Poly1305 using the random vault root key and the payload nonce. The
 canonical encoded prefix plus header body bytes are authenticated as AEAD
 associated data so header tampering fails closed.
+
+The decrypted payload is a plaintext JSON `VaultSnapshot`. These bytes are
+allowed only as in-memory payload content before encryption or after successful
+decryption; they are not written directly to `.cairn` files by the current
+implementation.
+
+Snapshot schema version 1 contains:
+
+- `schema_version`: `1`
+- `vault_id`: non-empty vault identifier
+- `created_at`: Unix timestamp seconds
+- `updated_at`: Unix timestamp seconds
+- `items`: list of vault items
+
+Each item currently supports `kind: "login_password"` and contains:
+
+- `id`: non-empty unique item identifier
+- `title`: non-empty display title
+- `username`: optional account identifier
+- `primary_secret`: password/secret string
+- `urls`: optional list represented as an array
+- `notes`: optional notes string
+- `tags`: optional list represented as an array
+- `created_at`: Unix timestamp seconds
+- `updated_at`: Unix timestamp seconds
+
+Snapshot decoding rejects unsupported snapshot schema versions, malformed JSON,
+unknown item kinds, duplicate item IDs, missing required identifiers/titles,
+empty login/password primary secrets, and updated timestamps earlier than
+created timestamps. Serialization validates the snapshot before returning
+plaintext payload bytes.
 
 ## Crypto Direction
 
