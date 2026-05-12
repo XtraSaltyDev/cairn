@@ -8,11 +8,11 @@ This project handles password vault design. Favor correctness, clear security bo
 
 ## Repo Workflow Gate
 
-- Base branch: `main`.
+- Base branch: resolve from `origin/HEAD` before starting work.
 - Before making code edits, inspect the checkout state with `git status --short --branch`, `git branch --show-current`, and `git fetch origin`.
-- For nontrivial work, do not edit directly on `main`. Use a feature branch or an isolated worktree from `origin/main` first.
+- For nontrivial work, do not edit directly on the remote default branch. Use a feature branch or an isolated worktree from `origin/HEAD` first.
 - Nontrivial work includes broad features, risky changes, exploratory passes, multi-pass implementation, cryptographic or vault-format changes, or changes expected to touch multiple files.
-- If the checkout is dirty, do not overwrite or reset existing changes. If the dirty state is unrelated, prefer a separate worktree from `origin/main`. If it overlaps the task and the safe path is unclear, stop and ask.
+- If the checkout is dirty, do not overwrite or reset existing changes. If the dirty state is unrelated, prefer a separate worktree from `origin/HEAD`. If it overlaps the task and the safe path is unclear, stop and ask.
 - Do not stage, commit, push, open PRs, merge, publish, or tag releases unless the user explicitly asks.
 - Before the final response, check `git status --short` and call out any untracked files that remain.
 
@@ -20,7 +20,7 @@ This project handles password vault design. Favor correctness, clear security bo
 
 Fresh-thread `/goal` prompts for Cairn should include:
 
-- Current repo state: path, current branch, dirty/clean status, base branch `main`, and whether the task should use a feature branch or worktree.
+- Current repo state: path, current branch, dirty/clean status, remote default branch from `origin/HEAD`, and whether the task should use a feature branch or worktree.
 - Scope fence: the exact `cairn-core`, `cairn-cli`, vault-format, docs, ADR, or test surface allowed to change.
 - Out of scope: sync, autofill, browser extension, passkeys, mobile, sharing, desktop UI, production-readiness claims, publishing, releases, and custom cryptography unless explicitly requested with an ADR/design change.
 - Success criteria: the precise format, parser, validation, CLI output, error handling, negative test, or documentation state that proves the task is done.
