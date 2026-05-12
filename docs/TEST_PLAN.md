@@ -53,6 +53,14 @@ encrypted CVF-1 payload. Implemented tests currently cover:
 - Decode-time validation after JSON parsing.
 - End-to-end in-memory flow from snapshot JSON payload bytes through CVF-1
   encryption, decryption, and snapshot decode.
+- Core encrypted snapshot boundary round-trip from `VaultSnapshot` to CVF-1
+  envelope bytes and back.
+- Invalid snapshots rejected before encryption.
+- Wrong passphrase and tampered encrypted snapshot bytes fail closed.
+- Malformed decrypted snapshot payload bytes rejected after successful envelope
+  decryption.
+- Boundary errors and debug output do not include item-secret or passphrase
+  sentinel text.
 
 ## Tamper Tests
 

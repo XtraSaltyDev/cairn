@@ -4,6 +4,7 @@ use std::fmt;
 use serde::{Deserialize, Serialize};
 
 use crate::error::CairnError;
+use crate::vault_format::{create_encrypted_envelope, decrypt_envelope};
 
 pub const SNAPSHOT_SCHEMA_VERSION: u16 = 1;
 
@@ -341,6 +342,64 @@ pub fn decode_snapshot_payload(bytes: &[u8]) -> Result<VaultSnapshot, CairnError
     Ok(snapshot)
 }
 
+pub fn create_encrypted_snapshot(
+    passphrase: &[u8],
+    snapshot: &VaultSnapshot,
+) -> Result<Vec<u8>, CairnError> {
+    create_encrypted_snapshot_with_envelope(passphrase, snapshot, create_encrypted_envelope)
+}
+
+pub fn decrypt_snapshot(
+    passphrase: &[u8],
+    envelope_bytes: &[u8],
+) -> Result<VaultSnapshot, CairnError> {
+    decrypt_snapshot_with_envelope(passphrase, envelope_bytes, decrypt_envelope)
+}
+
+type EnvelopePayloadFn = fn(&[u8], &[u8]) -> Result<Vec<u8>, CairnError>;
+
+fn create_encrypted_snapshot_with_envelope(
+    passphrase: &[u8],
+    snapshot: &VaultSnapshot,
+    encrypt_envelope: EnvelopePayloadFn,
+) -> Result<Vec<u8>, CairnError> {
+    let plaintext_payload = encode_snapshot_payload(snapshot)?;
+    encrypt_envelope(passphrase, &plaintext_payload)
+}
+
+fn decrypt_snapshot_with_envelope(
+    passphrase: &[u8],
+    envelope_bytes: &[u8],
+    decrypt_envelope: EnvelopePayloadFn,
+) -> Result<VaultSnapshot, CairnError> {
+    let plaintext_payload = decrypt_envelope(passphrase, envelope_bytes)?;
+    decode_snapshot_payload(&plaintext_payload)
+}
+
+#[cfg(test)]
+fn create_encrypted_snapshot_for_tests(
+    passphrase: &[u8],
+    snapshot: &VaultSnapshot,
+) -> Result<Vec<u8>, CairnError> {
+    create_encrypted_snapshot_with_envelope(
+        passphrase,
+        snapshot,
+        crate::vault_format::create_encrypted_envelope_for_tests,
+    )
+}
+
+#[cfg(test)]
+fn decrypt_snapshot_for_tests(
+    passphrase: &[u8],
+    envelope_bytes: &[u8],
+) -> Result<VaultSnapshot, CairnError> {
+    decrypt_snapshot_with_envelope(
+        passphrase,
+        envelope_bytes,
+        crate::vault_format::decrypt_envelope_for_tests,
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -348,6 +407,7 @@ mod tests {
     use crate::vault_format::{create_encrypted_envelope_for_tests, decrypt_envelope_for_tests};
 
     const TEST_PASSPHRASE: &[u8] = b"snapshot-envelope-test-input";
+    const WRONG_TEST_PASSPHRASE: &[u8] = b"wrong-snapshot-envelope-test-input";
     const TEST_SECRET_VALUE: &str = "redacted-placeholder";
 
     fn timestamp(seconds: u64) -> VaultTimestamp {
@@ -690,5 +750,121 @@ mod tests {
             .validate()
             .expect("decoded snapshot should validate");
         assert_eq!(decoded, snapshot);
+    }
+
+    #[test]
+    fn encrypted_snapshot_roundtrip_returns_valid_snapshot() {
+        let snapshot = valid_snapshot();
+
+        let envelope = create_encrypted_snapshot_for_tests(TEST_PASSPHRASE, &snapshot)
+            .expect("valid snapshot should encrypt");
+        let decrypted = decrypt_snapshot_for_tests(TEST_PASSPHRASE, &envelope)
+            .expect("encrypted snapshot should decrypt");
+
+        decrypted
+            .validate()
+            .expect("decrypted snapshot should validate");
+        assert_eq!(decrypted, snapshot);
+    }
+
+    #[test]
+    fn create_encrypted_snapshot_rejects_invalid_snapshot_before_encryption() {
+        let snapshot = VaultSnapshot::new(
+            " ",
+            timestamp(1_700_000_000),
+            timestamp(1_700_000_200),
+            vec![valid_item()],
+        );
+
+        assert_eq!(
+            create_encrypted_snapshot(TEST_PASSPHRASE, &snapshot),
+            Err(CairnError::InvalidSnapshot("vault_id is required"))
+        );
+    }
+
+    #[test]
+    fn decrypt_snapshot_rejects_wrong_passphrase() {
+        let envelope = create_encrypted_snapshot_for_tests(TEST_PASSPHRASE, &valid_snapshot())
+            .expect("valid snapshot should encrypt");
+
+        assert_eq!(
+            decrypt_snapshot_for_tests(WRONG_TEST_PASSPHRASE, &envelope),
+            Err(CairnError::AuthenticationFailed)
+        );
+    }
+
+    #[test]
+    fn decrypt_snapshot_rejects_tampered_envelope() {
+        let envelope = create_encrypted_snapshot_for_tests(TEST_PASSPHRASE, &valid_snapshot())
+            .expect("valid snapshot should encrypt");
+        let mut tampered = envelope;
+        let last = tampered.len() - 1;
+        tampered[last] ^= 0x01;
+
+        assert_eq!(
+            decrypt_snapshot_for_tests(TEST_PASSPHRASE, &tampered),
+            Err(CairnError::AuthenticationFailed)
+        );
+    }
+
+    #[test]
+    fn decrypt_snapshot_rejects_malformed_decrypted_payload() {
+        let envelope = create_encrypted_envelope_for_tests(TEST_PASSPHRASE, b"{not valid json")
+            .expect("malformed payload should still encrypt as envelope bytes");
+
+        assert_eq!(
+            decrypt_snapshot_for_tests(TEST_PASSPHRASE, &envelope),
+            Err(CairnError::MalformedSnapshot("snapshot JSON is malformed"))
+        );
+    }
+
+    #[test]
+    fn snapshot_boundary_errors_and_debug_output_do_not_leak_sensitive_inputs() {
+        const BOUNDARY_SECRET: &str = "not-a-real-item-secret-boundary-sentinel";
+        const BOUNDARY_PASSPHRASE: &[u8] = b"not-a-real-passphrase-boundary-sentinel";
+        const BOUNDARY_PASSPHRASE_TEXT: &str = "not-a-real-passphrase-boundary-sentinel";
+        const WRONG_BOUNDARY_PASSPHRASE: &[u8] = b"not-a-real-wrong-passphrase-boundary-sentinel";
+        const WRONG_BOUNDARY_PASSPHRASE_TEXT: &str =
+            "not-a-real-wrong-passphrase-boundary-sentinel";
+
+        let snapshot = VaultSnapshot::new(
+            "vault-test-1",
+            timestamp(1_700_000_000),
+            timestamp(1_700_000_200),
+            vec![VaultItem::login_password(
+                VaultItemId::new("item-login-1"),
+                "Example login",
+                SecretString::new(BOUNDARY_SECRET),
+                timestamp(1_700_000_000),
+                timestamp(1_700_000_100),
+            )],
+        );
+        let encrypted = create_encrypted_snapshot_for_tests(BOUNDARY_PASSPHRASE, &snapshot)
+            .expect("valid snapshot should encrypt");
+
+        let authentication_error =
+            decrypt_snapshot_for_tests(WRONG_BOUNDARY_PASSPHRASE, &encrypted)
+                .expect_err("wrong passphrase should fail");
+        let invalid_snapshot = VaultSnapshot::new(
+            " ",
+            timestamp(1_700_000_000),
+            timestamp(1_700_000_200),
+            snapshot.items().to_vec(),
+        );
+        let invalid_snapshot_error =
+            create_encrypted_snapshot(BOUNDARY_PASSPHRASE, &invalid_snapshot)
+                .expect_err("invalid snapshot should fail before encryption");
+
+        for output in [
+            format!("{snapshot:?}"),
+            format!("{authentication_error}"),
+            format!("{authentication_error:?}"),
+            format!("{invalid_snapshot_error}"),
+            format!("{invalid_snapshot_error:?}"),
+        ] {
+            assert!(!output.contains(BOUNDARY_SECRET));
+            assert!(!output.contains(BOUNDARY_PASSPHRASE_TEXT));
+            assert!(!output.contains(WRONG_BOUNDARY_PASSPHRASE_TEXT));
+        }
     }
 }
